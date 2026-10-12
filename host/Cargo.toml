@@ -1,0 +1,89 @@
+[package]
+name = "makuris-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "makuris-host"
+path = "src/main.rs"
+
+[[bin]]
+name = "demo_stream"
+path = "src/bin/demo_stream.rs"
+
+[[bin]]
+name = "bench_quality"
+path = "src/bin/bench_quality.rs"
+
+# VideoToolbox 硬编真实链路基准（采集 → BGRA IOSurface → 硬编 → Annex-B）。
+# 仅 macOS 可用：capture::surface / encode::vt 都是 macOS 专用模块。
+[[bin]]
+name = "bench_vt"
+path = "src/bin/bench_vt.rs"
+required-features = []
+
+# 采集探针：抓一帧真实屏幕算像素统计量，用来区分「采集到画面」与「全黑」。
+# 部署 Windows/Linux 被控端后自检用——日志里的「GDI 真实屏幕采集 2560x1440」
+# 只代表初始化成功，跑在 session 0 时拿到的其实是全黑。
+[[bin]]
+name = "probe_capture"
+path = "src/bin/probe_capture.rs"
+
+[features]
+# 在非 Windows 机器上对 Windows 平台代码做类型检查：
+#   cargo check -p makuris-host --features windows_typecheck
+#
+# 动机：capture/windows.rs、input/windows.rs 平时被 cfg 挡在编译之外，
+# 只有部署到 Windows 才会第一次被编译器看到——意味着上千行手写的 FFI 代码
+# （结构体布局、union、Win32 常量、函数签名）要等目标机上才暴露笔误。
+# 打开这个 feature 后这些模块在本机也参与编译；cargo check 不链接，
+# 所以仅有 extern 声明、没有实现的 Win32 符号不会报缺失，
+# 但类型不匹配、字段名拼错、签名对不上这类错误当场就能发现。
+# 它不影响运行时行为：模块入口仍由 target_os 决定。
+windows_typecheck = []
+
+[dependencies]
+makuris-proto = { path = "../proto" }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+# 信令 wss：自签证书 + SHA256 指纹固定（见 src/tls_pin.rs）。
+# 版本必须与 tokio-tungstenite 内部所用 rustls/tokio-rustls 一致，
+# 否则 ClientConfig 类型不同、编译或运行时会炸。
+rustls = "0.23"
+tokio-rustls = "0.26"
+sha2 = "0.10"
+futures = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = "0.2"
+rtc = "0.21"
+rtc-turn = "0.21"
+rtc-shared = "0.21"
+sansio = "1.0"
+bytes = "1"
+openh264 = "0.6"
+base64 = "0.22"
+
+# 非 macOS 平台用纯 Rust 的 mDNS 广播。
+# macOS 不走它：系统 mDNSResponder 独占 5353，纯 Rust daemon 收不到多播，
+# 实测「自注册 + 自浏览」发现不了任何服务（详见 src/bonjour.rs 的说明）。
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+mdns-sd = "0.21"
+# 枚举本机网卡，挑出真实局域网 IP。不能用「连外部地址取 local_addr」代替：
+# 装了代理/虚拟网卡的机器会选中那个网卡（实测台式机拿到 198.18.0.1），
+# 广播出去的地址不可达。if-addrs 已是 mdns-sd 的传递依赖，不引入新包树。
+if-addrs = "0.15"
+
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = { version = "0.23", features = ["highsierra"] }
+# VideoToolbox 硬件 H.264 编码：M4 Pro 上 3024x1964 仅需 ~15ms/帧，
+# 而 openh264 软编同分辨率要 54ms，是突破 2x 物理分辨率（文字清晰度）的关键。
+videotoolbox = "0.21"
+apple-cf = { version = "0.11", default-features = false, features = ["cm", "iosurface"] }
+# 枚举本机网络接口，挑出真实的局域网 IP（本机存在代理的 utun 虚拟网卡，
+# 直接 connect 外部地址取到的会是 198.18.0.1，不能用来对外通告）
+libc = "0.2"

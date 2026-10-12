@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Makuris Viewer</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 800px; margin: 20px auto; padding: 0 16px; }
+  video { width: 100%; background: #000; border-radius: 8px; }
+  textarea { width: 100%; height: 80px; font-family: monospace; font-size: 11px; }
+  button { padding: 8px 20px; font-size: 14px; cursor: pointer; margin: 4px 4px 4px 0; }
+  .step { margin: 12px 0; }
+  #logs { font-size: 12px; color: #666; max-height: 150px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<h2>Makuris 浏览器观看端</h2>
+
+<div class="step">
+  <b>步骤 1：</b>点击创建 offer，然后复制 SDP 粘贴到 Rust 终端
+  <br><br>
+  <button id="btnStart" onclick="createOffer()">创建 Offer</button>
+  <button onclick="copySDP()">复制 SDP</button>
+  <br><br>
+  <textarea id="localSDP" readonly placeholder="点击「创建 Offer」后这里会显示 base64 SDP..."></textarea>
+</div>
+
+<div class="step">
+  <b>步骤 2：</b>把 Rust 终端输出的 answer (base64) 粘贴到这里，然后点「连接」
+  <br><br>
+  <textarea id="remoteSDP" placeholder="粘贴 Rust 输出的 answer base64..."></textarea>
+  <br>
+  <button onclick="startSession()">连接</button>
+</div>
+
+<div class="step">
+  <b>画面：</b>
+  <br><br>
+  <video id="video" autoplay muted playsinline></video>
+</div>
+
+<div class="step">
+  <b>日志：</b>
+  <div id="logs"></div>
+</div>
+
+<script>
+let pc = null;
+
+function log(msg) {
+  const el = document.getElementById('logs');
+  el.innerHTML += new Date().toLocaleTimeString() + ' ' + msg + '<br>';
+  el.scrollTop = el.scrollHeight;
+}
+
+function createOffer() {
+  pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+
+  pc.oniceconnectionstatechange = () => log('ICE: ' + pc.iceConnectionState);
+  pc.onconnectionstatechange = () => log('Connection: ' + pc.connectionState);
+
+  pc.onicecandidate = event => {
+    if (event.candidate === null) {
+      // ICE gathering 完成，输出 base64 SDP
+      const b64 = btoa(JSON.stringify(pc.localDescription));
+      document.getElementById('localSDP').value = b64;
+      log('Offer 已生成，请复制到 Rust 终端');
+    }
+  };
+
+  pc.ontrack = event => {
+    log('收到远端视频轨道');
+    const video = document.getElementById('video');
+    video.srcObject = event.streams[0];
+    video.autoplay = true;
+  };
+
+  // 只收不发
+  pc.addTransceiver('video', { direction: 'recvonly' });
+
+  pc.createOffer()
+    .then(d => pc.setLocalDescription(d))
+    .catch(e => log('createOffer 失败: ' + e));
+}
+
+function copySDP() {
+  const ta = document.getElementById('localSDP');
+  ta.select();
+  navigator.clipboard.writeText(ta.value)
+    .then(() => log('SDP 已复制到剪贴板'))
+    .catch(() => document.execCommand('copy'));
+}
+
+function startSession() {
+  const b64 = document.getElementById('remoteSDP').value.trim();
+  if (!b64) { alert('请粘贴 Rust 输出的 answer'); return; }
+  try {
+    const json = JSON.parse(atob(b64));
+    pc.setRemoteDescription(json)
+      .then(() => log('Answer 已设置，等待连接...'))
+      .catch(e => log('setRemoteDescription 失败: ' + e));
+  } catch (e) {
+    alert('解析 answer 失败: ' + e);
+  }
+}
+</script>
+</body>
+</html>

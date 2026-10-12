@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>user</Author>
+    <Description>Makuris host (remote desktop agent). Runs in the logged-on desktop session because GDI screen capture in session 0 would capture a black screen.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <!-- 开机/登录自启：之前这处是空 &lt;Triggers /&gt;，任务只能手动 /run，
+         重启后就再也不会起来（实测 Triggers.Count = 0）。被控端必须常驻，
+         所以补上登录触发；StartWhenAvailable 让错过的触发在开机后补跑。 -->
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>S-1-5-21-0-0-0-1001</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-21-0-0-0-1001</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <!-- 必须是 HighestAvailable，不能是 LeastPrivilege。
+           UAC 开启时（EnableLUA=1），即使用户在 Administrators 组里，
+           LeastPrivilege 拿到的也是「过滤后的标准用户令牌」= Medium 完整性级别。
+           而 UIPI 的规则是：低完整性进程向高完整性窗口注入输入时，
+           SendInput 依然返回成功（1），事件却被系统静默丢弃——
+           日志一切正常、用户屏幕上毫无反应，是「能看画面但操作不了」的典型成因。
+           HighestAvailable 让任务以完整管理员令牌（High IL）启动，
+           注入才能覆盖所有窗口，包括以管理员身份运行的程序。 -->
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Users\user\makuris-run.bat</Command>
+      <WorkingDirectory>C:\Users\user\makuris</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

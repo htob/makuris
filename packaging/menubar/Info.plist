@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Makuris Menu Bar</string>
+    <key>CFBundleDisplayName</key>
+    <string>Makuris Menu Bar</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.makuris.host.menubar</string>
+    <key>CFBundleExecutable</key>
+    <string>makuris-menubar</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- 菜单栏助手必须是 accessory：不进 Dock、不进 ⌘Tab，只占状态栏。
+         裸可执行文件（无 bundle）拿不到这条声明，NSStatusItem 不会上屏——
+         这是把它包成独立 .app 放进主 bundle Resources 的根本原因。 -->
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>

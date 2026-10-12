@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Makuris Viewer（信令自动连接）</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 16px auto; padding: 0 16px; color: #222; }
+  h2 { font-size: 18px; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  input { padding: 6px 8px; font-size: 13px; border: 1px solid #ccc; border-radius: 6px; }
+  button { padding: 6px 16px; font-size: 13px; cursor: pointer; border-radius: 6px; border: 1px solid #888; }
+  #status { font-size: 13px; font-weight: 600; color: #0a7; }
+  video { width: 100%; max-width: 800px; background: #000; border-radius: 8px; display: block; }
+  #logs { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #555; background: #f6f8fa;
+          border: 1px solid #e1e4e8; border-radius: 6px; padding: 8px; margin-top: 12px;
+          max-height: 220px; overflow-y: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h2>Makuris 浏览器观看端 <small style="font-weight:400;color:#888">（信令自动连接，无需手动复制 SDP）</small></h2>
+
+<div class="bar">
+  <label>信令服务器</label>
+  <input id="sigUrl" value="ws://127.0.0.1:8443/ws" size="34">
+  <button id="btn" onclick="start()">连接</button>
+  <span id="status">未连接</span>
+</div>
+
+<video id="video" autoplay playsinline muted></video>
+<div id="logs"></div>
+
+<script>
+// 支持 ?sig=ws://... 覆盖信令地址；?auto=1 自动连接（供自动化验证）
+const params = new URLSearchParams(location.search);
+if (params.get('sig')) document.getElementById('sigUrl').value = params.get('sig');
+
+let ws = null, pc = null, hostId = null;
+const myId = 'browser-viewer-' + Math.random().toString(36).slice(2, 8);
+const video = document.getElementById('video');
+const statusEl = document.getElementById('status');
+const logsEl = document.getElementById('logs');
+
+// 暴露给自动化读取的状态
+window.__od = { stage: 'init', connected: false, trackReceived: false, error: null };
+
+function log(m) {
+  const t = new Date().toLocaleTimeString();
+  logsEl.textContent += `[${t}] ${m}\n`;
+  logsEl.scrollTop = logsEl.scrollHeight;
+  console.log('[makuris]', m);
+}
+function setStatus(s) { statusEl.textContent = s; }
+function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+function start() {
+  const url = document.getElementById('sigUrl').value;
+  document.getElementById('btn').disabled = true;
+  setStatus('连接信令中…');
+  log('连接信令 ' + url);
+  try { ws = new WebSocket(url); } catch (e) { log('WebSocket 创建失败: ' + e); return; }
+
+  ws.onopen = () => { log('信令已连接'); send({ type: 'register', device_id: myId, role: 'viewer' }); };
+  ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } handle(m); };
+  ws.onerror = () => { log('信令错误'); window.__od.error = 'signaling error'; };
+  ws.onclose = () => { log('信令断开'); setStatus('信令断开'); };
+}
+
+function handle(msg) {
+  switch (msg.type) {
+    case 'registered':
+      log('已注册为 ' + msg.device_id);
+      window.__od.stage = 'registered';
+      setStatus('已注册，获取设备列表');
+      send({ type: 'list_devices' });
+      break;
+
+    case 'device_list': {
+      const hosts = (msg.devices || []).filter(d => d.role === 'host');
+      log('在线设备: ' + JSON.stringify((msg.devices || []).map(d => d.device_id)));
+      if (hosts.length === 0) {
+        setStatus('无在线 host');
+        log('没有在线的 host，请先启动 makuris-host');
+        window.__od.stage = 'no_host';
+        window.__od.error = 'no host online';
+        break;
+      }
+      hostId = hosts[0].device_id;
+      log('发起连接到 host: ' + hostId);
+      setStatus('连接中 ' + hostId);
+      window.__od.stage = 'connecting';
+      send({ type: 'connect', from: myId, to: hostId });
+      break;
+    }
+
+    case 'sdp':
+      if (msg.sdp_type === 'offer') { onOffer(msg.sdp); }
+      else { log('收到非预期 sdp_type: ' + msg.sdp_type); }
+      break;
+
+    case 'ice':
+      if (pc && msg.candidate) {
+        pc.addIceCandidate({
+          candidate: msg.candidate,
+          sdpMid: msg.sdp_mid,
+          sdpMLineIndex: msg.sdp_mline_index
+        }).catch(e => log('addIceCandidate 失败: ' + e));
+      }
+      break;
+
+    case 'error':
+      log('服务器错误: ' + msg.message);
+      break;
+  }
+}
+
+async function onOffer(sdp) {
+  log('收到 host 的 offer，建立 PeerConnection');
+  window.__od.stage = 'offer_received';
+  pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
+  pc.ontrack = (e) => {
+    log('✅ 收到远端视频轨道，开始播放');
+    window.__od.trackReceived = true;
+    window.__od.stage = 'track_received';
+    video.srcObject = e.streams[0];
+    setStatus('已连接，播放中');
+  };
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      send({
+        type: 'ice', from: myId, to: hostId,
+        candidate: e.candidate.candidate,
+        sdp_mid: e.candidate.sdpMid,
+        sdp_mline_index: e.candidate.sdpMLineIndex
+      });
+    }
+  };
+  pc.onconnectionstatechange = () => {
+    log('连接状态: ' + pc.connectionState);
+    window.__od.stage = 'pc_' + pc.connectionState;
+    if (pc.connectionState === 'connected') { window.__od.connected = true; setStatus('P2P 已连接'); }
+    if (pc.connectionState === 'failed') { window.__od.error = 'pc failed'; setStatus('连接失败'); }
+  };
+  pc.ondatachannel = (e) => {
+    const ch = e.channel;
+    log('收到 DataChannel: ' + ch.label);
+    window.__odChannel = ch;
+    ch.onopen = () => {
+      log('DataChannel 已打开，发送测试输入事件...');
+      // 发送 3 条测试输入事件，验证 host 端接收+解析路径
+      const events = [
+        { kind: 'mouse_move', x: 0.35, y: 0.35 },
+        { kind: 'mouse_button', x: 0.35, y: 0.35, button: 0, down: true },
+        { kind: 'mouse_button', x: 0.35, y: 0.35, button: 0, down: false },
+      ];
+      events.forEach((ev, i) => {
+        setTimeout(() => {
+          ch.send(JSON.stringify(ev));
+          log('已发送输入事件 ' + (i+1) + ': ' + ev.kind);
+        }, i * 500);
+      });
+      window.__od.inputSent = true;
+    };
+  };
+
+  try {
+    await pc.setRemoteDescription({ type: 'offer', sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    send({ type: 'sdp', from: myId, to: hostId, sdp_type: 'answer', sdp: answer.sdp });
+    log('answer 已发送回 host');
+    window.__od.stage = 'answer_sent';
+  } catch (e) {
+    log('协商失败: ' + e);
+    window.__od.error = 'negotiation: ' + e;
+  }
+}
+
+// 自动连接模式（供浏览器自动化验证）
+if (params.get('auto') === '1') {
+  window.addEventListener('load', () => setTimeout(start, 300));
+}
+</script>
+</body>
+</html>

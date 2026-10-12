@@ -1,0 +1,23 @@
+# Makuris 云端部署：信令服务器 + coturn(STUN/TURN)
+# 用法：docker compose up -d
+# 注意：上线前必须修改 TURN 密钥，并配置 TLS（wss://）。
+services:
+  signaling:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.signaling
+    ports:
+      - "8443:8443"
+    environment:
+      PORT: "8443"
+      RUST_LOG: info
+    restart: unless-stopped
+
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    command: >
+      -n --realm=makuris --no-cli
+      --static-auth-secret=CHANGE_ME_TURN_SECRET
+      --min-port=49160 --max-port=49200
+    restart: unless-stopped

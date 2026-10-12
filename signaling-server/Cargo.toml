@@ -1,0 +1,26 @@
+[package]
+name = "makuris-signaling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "makuris-signaling"
+path = "src/main.rs"
+
+[dependencies]
+makuris-proto = { path = "../proto" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+axum = { version = "0.7", features = ["ws"] }
+# TLS 终结（wss）：自签证书 + 客户端指纹固定。见 main.rs 注释。
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+dashmap = "6"
+# TURN 时效凭证签发（coturn use-auth-secret / REST 风格：Base64(HMAC-SHA1(secret, username))）
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"

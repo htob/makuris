@@ -1,0 +1,27 @@
+# Makuris 信令服务器 systemd 单元（云服务器常驻）。
+#
+# 为什么迁到云服务器：trycloudflare 临时隧道几小时就过期、且注册看运气
+# （实测反复 context deadline exceeded），用户被迫一次次要新链接。信令放到
+# 有固定公网 IP 的云服务器（203.0.113.10）后，两端被控端与 iOS 直接连
+# ws://203.0.113.10:8443/ws，永不再换地址。
+#
+# 密钥不写进本单元（仓库要开源）：经 EnvironmentFile 注入，该文件 600 权限、
+# 只在部署时由 scripts/deploy-signaling.sh 生成。信令零知识、不碰媒体，
+# 且配了 MAKURIS_ACCESS_KEY 后 load_or_create_key 提前返回、不写盘，
+# 故无需 ReadWritePaths。
+[Unit]
+Description=Makuris signaling server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/makuris-signaling
+EnvironmentFile=/etc/makuris/signaling.env
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

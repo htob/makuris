@@ -1,0 +1,28 @@
+# Windows 交叉编译配置（在 macOS 上直接产出 makuris-host.exe）
+#
+# 动机：台式机的网络下载速度实测仅 ~23KB/s（拉 14.7MB 的 rustup-init 要十几分钟），
+# 而本机可达 3.4MB/s，差 150 倍。在台式机上装整套 Rust 工具链既慢又可能被
+# 下载中断反复折腾；改为本机交叉编译出 .exe 直接 scp 过去，目标机零依赖。
+#
+# 前置（仅装机一次）：
+#   brew install mingw-w64
+#   rustup target add x86_64-pc-windows-gnu
+#
+# 用法：
+#   cargo build --release --target x86_64-pc-windows-gnu -p makuris-host
+#   产物：target/x86_64-pc-windows-gnu/release/makuris-host.exe
+
+[target.x86_64-pc-windows-gnu]
+# 链接器与 C 编译器统一交给 mingw-w64：openh264-sys2 会在构建期用 cc crate
+# 编译 C/C++ 源码，它按 target 自动推导出同一套工具（x86_64-w64-mingw32-gcc/g++），
+# 因此这里只需显式指定链接器，C 依赖会自动跟上。
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
+
+# 静态链接 gcc/C++ 运行时：openh264 含 C++ 源码，默认会动态依赖
+# libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll——这三个 DLL
+# 目标机上都没有，缺任何一个进程都会在加载阶段被 Windows 直接终止（无输出、
+# 无退出码，最难查）。静态链接后产出单个 exe，拷贝即用。
+rustflags = [
+    "-C", "link-args=-static-libgcc -static-libstdc++ -static",
+]

@@ -1,0 +1,32 @@
+# ---------- 构建产物 ----------
+/target
+/dist
+**/*.rs.bk
+packaging/build/
+*.dmg
+
+# ---------- Xcode ----------
+DerivedData/
+xcuserdata/
+*.xcresult
+
+# ---------- 系统与编辑器 ----------
+.DS_Store
+
+# ---------- 日志与抓包（含运行时信息，永不入库）----------
+*.log
+*.pcap
+
+# ---------- 凭证与运行时状态（开源红线，见 docs/OPEN_SOURCE_AUDIT.md）----------
+**/access-key.txt
+**/pairing-code.txt
+**/trusted-tokens.json
+*.pem
+*.key
+*.p12
+
+# ---------- 本地部署配置（含个人网络信息：SSH 目标、局域网 IP、用户名）----------
+scripts/.deploy.env
+
+# 注：Cargo.lock 刻意入库（二进制项目，保证用户可复现构建）。
+# 旧版 .gitignore 曾忽略它，开源前已改为提交。

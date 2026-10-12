@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 本地网络权限说明：iOS 14+ 起，浏览/连接局域网设备必须先取得用户授权。
+	     缺少这条描述，系统弹窗无法展示（甚至直接拒绝），Bonjour 发现会静默失败。 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于在同一 Wi-Fi 下自动发现并连接你的电脑，无需手动输入地址。</string>
+
+	<!-- 声明要浏览的 Bonjour 服务类型。必须与 host 端广播的类型逐字一致
+	     （host/src/lan.rs 的 SERVICE_TYPE），否则 NWBrowser 永远返回空结果且不报错。 -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_makuris._tcp</string>
+	</array>
+
+	<!-- 后台保活：远程桌面切到后台时连接不该断。
+	     没有后台模式的 app 会被系统在几秒内挂起，WebRTC 的 socket、
+	     心跳、解码随之全部停摆，用户切回来只看到「未连接」。
+	     声明 audio 后进程可继续运行（配合一处静音音频循环播放维持音频
+	     会话），连接得以存活。这是业界通行做法，未使用私有 API。 -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<!-- ATS 例外：信令走明文 ws:// 到云服务器裸 IP（203.0.113.10:8443）。
+	     iOS 默认禁止明文 HTTP/WS，且公网 IP 不在豁免范围（仅 localhost/.local/
+	     私有网段豁免），不放行则 URLSessionWebSocketTask 直接拒连、用户只看到
+	     「连接失败」。媒体流走 WebRTC（DTLS-SRTP 加密），不受 ATS 约束。
+	     开源/上架前应改为 wss:// + 域名证书，届时移除本例外。 -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

@@ -45,11 +45,29 @@ final class BonjourDiscovery: ObservableObject {
 
     private var browser: NWBrowser?
 
+    /// 浏览器代次。每次 start/stop 递增，回调据此判断自己是否属于当前这一代。
+    ///
+    /// 为什么必须有：cancel 一个 NWBrowser 之后，它的状态回调与结果回调
+    /// 仍会异步到达，而那时 self.browser 已经指向新建的那一个。不认身份就会
+    /// 出两类错——旧浏览器的 failed 把新浏览器的状态写坏（实测：下拉刷新后
+    /// 旧浏览器报 -65569 DefunctConnection，被误判成「本地网络权限被拒」，
+    /// 首页整块换成权限提示，看起来就是「局域网里一台电脑都没有」），
+    /// 以及旧结果覆盖刚取回的新列表。
+    private var browserToken = 0
+
     /// 服务类型必须与 host 端广播的一致（host/src/lan.rs 的 REGTYPE）
     private static let serviceType = "_makuris._tcp"
 
     func start() {
         guard browser == nil else { return }
+
+        // 每次启动都换一代，旧代次的回调（含取消后仍会异步到达的那些）随之作废。
+        browserToken &+= 1
+        let token = browserToken
+        // 重新开始浏览就复位权限判定。它只该反映「本次浏览是否被系统拒绝」：
+        // 不复位的话，一次误判（或用户后来去设置里把权限打开了）会让
+        // 「无法搜索局域网」永久留在首页——列表从此再也不显示任何电脑。
+        permissionDenied = false
 
         let params = NWParameters()
         // 只走常规网络，不开点对点（AWDL），否则会在列表里冒出连不上的条目
@@ -68,14 +86,20 @@ final class BonjourDiscovery: ObservableObject {
 
         browser.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
-                guard let self else { return }
+                // 先认身份再认状态：不是当前这一代浏览器的回调一律丢弃。
+                guard let self, self.browserToken == token else { return }
                 switch state {
                 case .ready:
                     self.isReady = true
                 case .failed(let error):
-                    // 被拒时系统给的是 -65555（policy denied）之类的错误
-                    let ns = error as NSError
-                    if ns.code == -65555 || ns.domain.contains("Network") {
+                    // 只有系统明确表示「本地网络被策略拒绝」才认定权限问题。
+                    //
+                    // 不能沿用 ns.domain.contains("Network") 这种写法：NWError
+                    // 桥接出来的 NSError，domain 就是 "Network"，那个条件对任何
+                    // 网络错误都成立——实测把「-65569 DefunctConnection」（浏览器
+                    // 被取消后的常见报错）也判成权限被拒，首页整段变成权限提示，
+                    // 用户看到的就是「局域网里一台电脑都没有」。
+                    if (error as NSError).code == -65555 {
                         self.permissionDenied = true
                     }
                     print("[bonjour] 浏览失败: \(error)")
@@ -90,7 +114,10 @@ final class BonjourDiscovery: ObservableObject {
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             let found = results.compactMap(Self.parse)
             Task { @MainActor in
-                self?.computers = found
+                // 同样认身份：旧浏览器被取消后仍可能送来一次结果，
+                // 不拦就会用陈旧列表覆盖刚取回的新列表。
+                guard let self, self.browserToken == token else { return }
+                self.computers = found
                 print("[bonjour] 发现 \(found.count) 台电脑: \(found.map(\.serviceName))")
             }
         }
@@ -100,16 +127,26 @@ final class BonjourDiscovery: ObservableObject {
     }
 
     func stop() {
+        // 先换一代，再取消：这样被取消浏览器随后到达的回调都会被判为旧代次丢掉。
+        browserToken &+= 1
         browser?.cancel()
         browser = nil
         isReady = false
     }
 
-    /// 手动重扫：先用浏览器概览一次全量结果
-    func rescan() {
-        guard let browser else { return }
-        // 重新发起一次查询，不需要重建 browser
-        browser.browseResultsChangedHandler?(browser.browseResults, [])
+    /// 手动重扫（下拉刷新用）：重建浏览器，强制重新发起一次查询。
+    ///
+    /// 不能沿用「把 browseResults 原样回放给回调」的老做法——那只是把同一份
+    /// 列表再贴一遍，网段里新上线的电脑不会因此出现，用户以为刷过了其实什么
+    /// 都没变（假刷新比没有刷新更误导）。重建浏览器才会重新发一次 mDNS 查询，
+    /// 局域网应答在毫秒级，下拉手势的转圈期间就能拿到最新结果。
+    ///
+    /// stop() 会把 isReady 置回 false，界面那段「正在查找附近的电脑…」会短暂
+    /// 重现，这也是真实的：此刻确实在重新找。若本来就有结果，列表不会变空，
+    /// 用户看到的就是转圈一闪、列表还在。
+    func restart() {
+        stop()
+        start()
     }
 
     /// 从浏览结果中解析出 TXT 记录里的连接信息

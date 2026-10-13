@@ -44,6 +44,8 @@ struct ContentView: View {
                 if !signaling.devices.isEmpty { onlineSection }
             }
             .listStyle(.insetGrouped)
+            // 下拉刷新：一次把「同一 Wi-Fi 下」与「外面的网络也能连」两块都重新取
+            .refreshable { await refreshHome() }
             // 隐藏系统列表底与导航栏底，让暖色纸背景整屏透出来。
             // 不改的话，这块会是系统白（浅色模式）——就是「整个背景是白色」的来源。
             .scrollContentBackground(.hidden)
@@ -320,6 +322,38 @@ struct ContentView: View {
         case .failed(let reason): return reason
         case .disconnected: return "未连接"
         }
+    }
+
+    // MARK: - 下拉刷新
+
+    /// 下拉刷新：重扫局域网 + 重取在线设备。
+    ///
+    /// 只刷「会变」的两块。「已保存的」是本地数据，刷新不会让它变——刷它等于
+    /// 让用户做了个动作却不可能产生任何结果，反倒让人怀疑刷新没生效。
+    ///
+    /// 为什么必须兜底等一秒：局域网一个来回只要几毫秒，刷新函数会立刻返回，
+    /// 系统的下拉转圈一闪而过（有时根本看不见），用户判定「没刷成功」就会
+    /// 反复下拉。这里等的是观感，不是数据——两次刷新在这一秒内早已发出去，
+    /// 新结果由各自的回调推回界面。
+    ///
+    /// 为什么不提示成功/失败：刷新结果在界面上本来就自明（列表变了没有、
+    /// 状态徽标是绿是灰）。从没连过信令服务器时也只刷局域网、不弹提示——
+    /// 那条路径下「外面的网络也能连」本来就该是空的，弹一句话反而像出了错。
+    @MainActor
+    private func refreshHome() async {
+        // ① 局域网：重建浏览器，强制重新查询一次
+        discovery.restart()
+
+        // ② 在线设备：连着就重新要一份列表；断开但之前连过就顺手重连——
+        // 重连成功后服务器会把设备列表一起推回来，不必再要一次。
+        // 从没连过（没有上次地址）时什么都不做：没有可连的地址。
+        if signaling.state.isConnected {
+            signaling.refreshDeviceList()
+        } else {
+            signaling.reconnectIfNeeded()
+        }
+
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
     }
 
     // MARK: - 连接

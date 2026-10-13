@@ -59,6 +59,10 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = "0.2"
+# 这里不写 tracing-log：tracing-subscriber 的 default feature 已含它，日志层
+# 初始化（main.rs 的 .init()）会自动把 log 门面接进 tracing，mdns-sd 的 debug
+# 记录因此可见。若在这里显式加依赖并手动 init，会与 .init() 重复注册 logger，
+# 进程启动即 panic（SetLoggerError，2026-10-13 台式机 exit=101）。
 rtc = "0.21"
 rtc-turn = "0.21"
 rtc-shared = "0.21"
@@ -76,6 +80,10 @@ mdns-sd = "0.21"
 # 装了代理/虚拟网卡的机器会选中那个网卡（实测台式机拿到 198.18.0.1），
 # 广播出去的地址不可达。if-addrs 已是 mdns-sd 的传递依赖，不引入新包树。
 if-addrs = "0.15"
+# 广播自检要另开一个 0.0.0.0:5353 的旁听 socket（与 mdns-sd 共享端口），必须设
+# SO_REUSEADDR——std 不暴露这个选项。socket2 已是 mdns-sd 的传递依赖（锁文件里
+# 是 0.6.5），这里不引入新包树。
+socket2 = "0.6"
 
 
 [target.'cfg(target_os = "macos")'.dependencies]

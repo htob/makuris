@@ -83,13 +83,39 @@ async fn main() -> Result<()> {
     let _ = std::fs::create_dir_all(&log_dir);
     let file_appender = tracing_appender::rolling::never(&log_dir, "host.log");
     let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+    // 日志级别默认 info，但 mdns_sd 必须开 debug——这是唯一能看见「mDNS 广播
+    // 悄悄没发出去」的地方：mdns-sd 建 IPv4 组播 socket 失败时只打 debug 级日志
+    // （service_daemon.rs 的 "failed to set up IPv4 socket"、"failed to join
+    // multicast ... Skipped"）。不打开就等于静默失败——进程活着、8444 在听、
+    // 日志一片正常，唯一症状是「同一 Wi-Fi 下手机看不到这台电脑」（2026-10-13
+    // 台式机实测，当时只能靠重启被控端碰运气恢复）。
+    //
+    // 不能只写进默认值：RUST_LOG 会整体覆盖默认值，而台式机的计划任务已经设了
+    // RUST_LOG=makuris_host=debug,rtc=warn,rtc_ice=debug（实测），那样这条
+    // directive 永远生效不了（当时的 host.log 里 mdns_sd 记录数正好是 0）。
+    // 所以无论 RUST_LOG 是什么，都显式把它追加到最终过滤器上。mdns-sd 只在建
+    // socket/入组/出错这几条路径上打 debug，日志量很小。
+    let mut filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::registry()
+    if let Ok(directive) = "mdns_sd=debug".parse::<tracing_subscriber::filter::Directive>() {
+        filter = filter.add_directive(directive);
+    }
+    // 注意：这里绝对不要再手动调 tracing_log::LogTracer::init()。
+    // mdns-sd 走的是 log 门面、tracing 订阅不会自动接管，但 tracing-subscriber
+    // 的 default feature 已含 tracing-log，下面的 .init() 会自己装一次 LogTracer
+    // （cargo tree -i tracing-log 可见 subscriber 启用 log-tracer feature）。
+    // 手动先装一遍会让 .init() 里的第二次注册冲突，进程启动即 panic：
+    //   failed to set global default subscriber: SetLoggerError(())
+    // 2026-10-13 台式机实测 exit=101，被控端起不来且日志只剩崩溃栈。
+    // 用 try_init 而不是 init：init 在全局 subscriber 已被占用时直接 panic。被控端
+    // 是无人值守进程，日志层装不上最多是少一份日志，绝不该让它起不来（2026-10-13
+    // 台式机实测：重复注册 logger 导致 init 抛 SetLoggerError，进程 exit=101，
+    // 表现成「部署完就再也看不到这台电脑」）。
+    let _ = tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
         .with(tracing_subscriber::fmt::layer().with_writer(non_blocking))
-        .init();
+        .try_init();
 
     // WebRTC 启动自检：验证 H264 协商层在本机可用
     match stream::create_peer_connection(vec![], "640033") {

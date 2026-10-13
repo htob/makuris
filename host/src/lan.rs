@@ -13,6 +13,9 @@
 //! 消息格式沿用 `SignalMsg`，与中央信令完全一致，因此 iOS 侧可以复用
 //! 同一个 `SignalingClient`，只是把连接的 URL 指向这台电脑而不是服务器。
 
+// 只在非 macOS 分支用到（service_info 的 ip 字段、start_bonjour 的 V4 判定）；
+// macOS 走系统 Bonjour，不需要它，不加门控会留下 unused import warning。
+#[cfg(not(target_os = "macos"))]
 use std::net::IpAddr;
 
 use crate::netinfo::local_ip;
@@ -259,27 +262,19 @@ fn start_bonjour(device_id: &str, port: u16) -> bool {
     }
 }
 
-/// 非 macOS 平台用纯 Rust 的 mDNS 广播
-/// （Linux/Windows 上一般没有系统守护进程独占 5353 的问题）。
+/// mDNS 服务描述：实例名、地址、端口与 TXT 记录。
+///
+/// TXT 记录必须带上 ip/port，与 macOS 分支保持一致。
+/// iOS 侧优先用 TXT 里的 ip 直连（见 BonjourDiscovery.swift）：那是不依赖
+/// 域名解析的地址。少了它，手机只能拿 "<实例名>.local" 去解析，而 Windows
+/// 主机上的 .local 解析并不可靠（既非 Bonjour 原生平台，也没有 mDNSResponder），
+/// 典型症状就是「列表里看得到这台电脑，点了没反应」。
 #[cfg(not(target_os = "macos"))]
-fn start_bonjour(device_id: &str, port: u16) -> bool {
-    let daemon = match ServiceDaemon::new() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!("[lan] mDNS 守护进程启动失败: {}", e);
-            return false;
-        }
-    };
-
+fn service_info(device_id: &str, port: u16) -> Option<ServiceInfo> {
     let ip = local_ip();
     let ip_text = ip.map(|a| a.to_string()).unwrap_or_default();
     let ips: Vec<IpAddr> = ip.into_iter().collect();
     let port_text = port.to_string();
-    // TXT 记录必须带上 ip/port，与 macOS 分支保持一致。
-    // iOS 侧优先用 TXT 里的 ip 直连（见 BonjourDiscovery.swift）：那是不依赖
-    // 域名解析的地址。少了它，手机只能拿 "<实例名>.local" 去解析，而 Windows
-    // 主机上的 .local 解析并不可靠（既非 Bonjour 原生平台，也没有 mDNSResponder），
-    // 典型症状就是「列表里看得到这台电脑，点了没反应」。
     let props = vec![
         ("id".to_string(), device_id.to_string()),
         ("platform".to_string(), platform_name().to_string()),
@@ -288,7 +283,7 @@ fn start_bonjour(device_id: &str, port: u16) -> bool {
         ("port".to_string(), port_text),
     ];
 
-    let info = match ServiceInfo::new(
+    match ServiceInfo::new(
         SERVICE_TYPE,
         &hostname(),
         &format!("{}.local.", device_id),
@@ -296,25 +291,208 @@ fn start_bonjour(device_id: &str, port: u16) -> bool {
         port,
         props.as_slice(),
     ) {
-        Ok(i) => i,
+        Ok(i) => Some(i),
         Err(e) => {
             tracing::warn!("[lan] mDNS 服务描述构建失败: {}", e);
-            return false;
-        }
-    };
-
-    match daemon.register(info) {
-        Ok(()) => {
-            // daemon 必须保活：drop 掉它，广播就撤销了
-            std::mem::forget(daemon);
-            tracing::info!("[lan] mDNS 广播已启动: {} (端口 {})", SERVICE_TYPE, port);
-            true
-        }
-        Err(e) => {
-            tracing::warn!("[lan] mDNS 注册失败: {}", e);
-            false
+            None
         }
     }
+}
+
+/// 起一个 mDNS 守护进程并把广播注册进去。首次启动与自检失败后的重建都走这里。
+#[cfg(not(target_os = "macos"))]
+fn spawn_mdns_daemon(device_id: &str, port: u16) -> Option<ServiceDaemon> {
+    let daemon = match ServiceDaemon::new() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("[lan] mDNS 守护进程启动失败: {}", e);
+            return None;
+        }
+    };
+    let info = service_info(device_id, port)?;
+    match daemon.register(info) {
+        Ok(()) => Some(daemon),
+        Err(e) => {
+            tracing::warn!("[lan] mDNS 注册失败: {}", e);
+            None
+        }
+    }
+}
+
+/// mDNS 组播地址与端口（RFC 6762）。
+#[cfg(not(target_os = "macos"))]
+const MDNS_MULTICAST_V4: std::net::Ipv4Addr = std::net::Ipv4Addr::new(224, 0, 0, 251);
+#[cfg(not(target_os = "macos"))]
+const MDNS_PORT: u16 = 5353;
+/// 自检窗口：要盖住 mdns-sd 的探测+公告阶段（注册后 1 秒内发完）。
+#[cfg(not(target_os = "macos"))]
+const MDNS_SELFCHECK_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+/// 自检没通过时最多重建几次广播（退避 2s / 6s / 18s，每次重建后重新自检）。
+#[cfg(not(target_os = "macos"))]
+const MDNS_REBUILD_LIMIT: u32 = 3;
+
+/// 开一个只用来旁听的 socket：与 mdns-sd 共享 5353 端口并加入 mDNS 组播组。
+///
+/// 必须设 SO_REUSEADDR：Windows 上 5353 恒被系统 Dnscache 与 chrome/Edge 一起
+/// 共享，不带这个选项连绑都绑不上（实测报 Only one usage of each socket
+/// address）。只在局域网那块网卡上入组——多网卡机器（本机有 6 张 169.254
+/// 幽灵网卡）入错网卡同样收不到包。
+#[cfg(not(target_os = "macos"))]
+fn open_mdns_listener(local: std::net::Ipv4Addr) -> Option<std::net::UdpSocket> {
+    let sock = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .ok()?;
+    sock.set_reuse_address(true).ok()?;
+    let any = std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, MDNS_PORT));
+    sock.bind(&any.into()).ok()?;
+    if let Err(e) = sock.join_multicast_v4(&MDNS_MULTICAST_V4, &local) {
+        tracing::warn!("[lan] mDNS 自检：在 {} 上加入组播组失败: {}", local, e);
+        return None;
+    }
+    // 读超时：窗口内轮询，不能一直阻塞
+    sock.set_read_timeout(Some(std::time::Duration::from_millis(250)))
+        .ok()?;
+    Some(sock.into())
+}
+
+/// 窗口内是否看到「本机自己发出」的 mDNS 包。
+///
+/// 这是本机唯一可靠的「广播真的生效了吗」判据：mdns-sd 若只建成了 IPv6 socket
+/// （2026-10-13 台式机实测的故障形态），IPv4 组播上就一个包都不会有，而手机是
+/// 走 IPv4 浏览的——于是「进程正常、8444 正常、日志正常，就是看不到这台电脑」。
+/// 只认「源地址 = 本机局域网 IP 且源端口 = 5353」的包，避免把邻居的 mDNS 流量
+/// 当成自己的广播。
+#[cfg(not(target_os = "macos"))]
+fn saw_own_mdns(
+    sock: &std::net::UdpSocket,
+    local: std::net::Ipv4Addr,
+    window: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + window;
+    let mut buf = [0u8; 2048];
+    while std::time::Instant::now() < deadline {
+        match sock.recv_from(&mut buf) {
+            Ok((_, from)) => {
+                if let std::net::SocketAddr::V4(v4) = from {
+                    if *v4.ip() == local && v4.port() == MDNS_PORT {
+                        return true;
+                    }
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => {
+                tracing::debug!("[lan] mDNS 自检读取失败: {}", e);
+                return false;
+            }
+        }
+    }
+    false
+}
+
+/// 广播自检 + 失败重建（跑在后台线程里，不拖慢「局域网直连已就绪」）。
+///
+/// 为什么要有这段：mdns-sd 建 IPv4 socket 失败时只在内部打 debug 级日志，默认
+/// 过滤器把日志吞掉——进程活着、8444 在听、日志一片正常，唯一症状是「同一
+/// Wi-Fi 下手机看不到这台电脑」，而当时的恢复手段只有重启碰运气（2026-10-13
+/// 实测）。这里在注册后旁听 mDNS 组播：窗口内没看到本机发出的包，就判定广播
+/// 没生效，重建 daemon 重试；连续失败则明确报错，把「该重启被控端了」变成
+/// 日志里一条看得懂的记录，而不是靠猜。
+#[cfg(not(target_os = "macos"))]
+fn selfcheck_mdns(
+    mut daemon: ServiceDaemon,
+    listener: std::net::UdpSocket,
+    local: std::net::Ipv4Addr,
+    device_id: String,
+    port: u16,
+) {
+    let mut attempt = 0u32;
+    loop {
+        if saw_own_mdns(&listener, local, MDNS_SELFCHECK_WINDOW) {
+            if attempt == 0 {
+                tracing::info!("[lan] mDNS 自检通过：{} 上已发出广播", local);
+            } else {
+                tracing::warn!("[lan] mDNS 广播已重建成功（第 {} 次重试，地址 {}）", attempt, local);
+            }
+            // 线程退出前把 daemon 保活：drop 掉它，广播就撤销了
+            std::mem::forget(daemon);
+            return;
+        }
+        if attempt >= MDNS_REBUILD_LIMIT {
+            tracing::error!(
+                "[lan] mDNS 广播自检连续 {} 次未通过：{} 秒内没看到本机在 IPv4 组播上发出的包，\
+                 同一 Wi-Fi 下很可能看不到这台电脑（在 app 里手填 {} 仍可直接连）。\
+                 排查：在 host.log 里搜 mdns_sd 的 \"failed to set up IPv4 socket\" 或 \
+                 \"failed to join multicast\" 看具体原因；重启被控端可临时恢复。",
+                attempt,
+                MDNS_SELFCHECK_WINDOW.as_secs(),
+                local
+            );
+            // 仍然保活最后一次建起来的 daemon：它至少还有 IPv6 那一半
+            std::mem::forget(daemon);
+            return;
+        }
+        let backoff = std::time::Duration::from_secs(2 * 3u64.pow(attempt));
+        attempt += 1;
+        tracing::warn!(
+            "[lan] mDNS 自检未通过：{:?} 内没看到本机发出的 mDNS 包，{:?} 后重建广播（第 {} 次）",
+            MDNS_SELFCHECK_WINDOW,
+            backoff,
+            attempt
+        );
+        std::thread::sleep(backoff);
+        // 重建前必须先撤掉旧实例：不撤的话同一个实例名会在组播上并存，mdns-sd
+        // 探测到名字冲突会把新实例改名，手机列表里就冒出「user (2)」这种重复项
+        // （2026-10-13 复核发现：原实现直接 forget 旧 daemon，没有撤销这一步）。
+        let _ = daemon.shutdown();
+        match spawn_mdns_daemon(&device_id, port) {
+            Some(d) => daemon = d,
+            None => {
+                tracing::warn!("[lan] mDNS 广播重建失败，放弃自愈；重启被控端可临时恢复");
+                return;
+            }
+        }
+    }
+}
+
+/// 非 macOS 平台用纯 Rust 的 mDNS 广播
+/// （Linux/Windows 上一般没有系统守护进程独占 5353 的问题）。
+#[cfg(not(target_os = "macos"))]
+fn start_bonjour(device_id: &str, port: u16) -> bool {
+    // 先开旁听、后注册：mdns-sd 的探测与公告都在 register() 里发起，
+    // 顺序反了就监听不到自己的包。
+    let local_v4 = match local_ip() {
+        Some(IpAddr::V4(v4)) => Some(v4),
+        _ => None,
+    };
+    let listener = local_v4.and_then(open_mdns_listener);
+
+    let daemon = match spawn_mdns_daemon(device_id, port) {
+        Some(d) => d,
+        None => return false,
+    };
+    tracing::info!("[lan] mDNS 广播已启动: {} (端口 {})", SERVICE_TYPE, port);
+
+    match (listener, local_v4) {
+        (Some(listener), Some(local)) => {
+            let device_id = device_id.to_string();
+            // daemon 的所有权交给自检线程：它负责保活（正常路径 forget），并在重建
+            // 时先 shutdown 掉旧实例——否则同名实例会在组播上并存，mdns-sd 检测到
+            // 名字冲突会给新实例改名，手机列表里冒出「user (2)」这种重复项。
+            std::thread::spawn(move || selfcheck_mdns(daemon, listener, local, device_id, port));
+        }
+        _ => {
+            // 没开旁听 socket 时由主线程保活：drop 掉 daemon 就等于撤销广播
+            std::mem::forget(daemon);
+            tracing::warn!("[lan] mDNS 自检跳过：没取到局域网 IPv4 地址，无法判断广播是否真的发出");
+        }
+    }
+
+    true
 }
 
 // 本机局域网地址探测已抽到 crate::netinfo（三处共用：此处广播、WebRTC 候选、

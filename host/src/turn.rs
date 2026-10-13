@@ -43,6 +43,18 @@ pub struct TurnConfig {
     pub realm: String,
 }
 
+/// 因本地 permission 未就绪而暂存的中继包（等权限建好后重发）。
+struct PendingSend {
+    peer: SocketAddr,
+    data: Vec<u8>,
+    queued_at: Instant,
+}
+
+/// 待发队列上限：防止对端持续不可达时无限堆积内存。
+const MAX_PENDING_SENDS: usize = 512;
+/// 中继包最长等待时间：媒体包超时即失去意义，超时直接丢弃。
+const PENDING_SEND_TTL: Duration = Duration::from_secs(8);
+
 /// 后台泵送 task 的命令
 enum Cmd {
     Send { peer: SocketAddr, data: Vec<u8> },
@@ -181,6 +193,13 @@ impl TurnAllocation {
         let mut last_refresh = Instant::now();
         // 分配默认 lifetime 10 分钟，5 分钟 Refresh 一次留足余量
         let refresh_interval = Duration::from_secs(300);
+        // 因本地缺 permission 而发不出去的中继包：先补建权限、入队，下一轮重发。
+        //
+        // rtc-turn 的 send_to() 是「本地先查 perm_map，没有 Permitted 条目就直接返回
+        // ErrNoPermission」，包连网卡都出不去。而 perm 条目可能被 rtc-turn 就地删除
+        // （收到任何 CreatePermission 错误响应时它都会 perm_map.remove），此后该 peer
+        // 永久发不出包 —— 实测 4G 中继下 Windows→iPhone 方向 0 包、会话 Failed 即此因。
+        let mut pending_sends: Vec<PendingSend> = Vec::new();
 
         loop {
             let now = Instant::now();
@@ -189,16 +208,45 @@ impl TurnAllocation {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     Cmd::Send { peer, data } => {
+                        let mut sent = false;
                         if let Ok(mut r) = client.relay(relay_addr) {
-                            if let Err(e) = r.send_to(now, &data, peer) {
-                                warn!("[turn] send_to 失败: {:?}", e);
+                            match r.send_to(now, &data, peer) {
+                                Ok(()) => sent = true,
+                                Err(e) => warn!(
+                                    "[turn] send_to 失败: {:?} peer={}，补建 permission 后排队重发",
+                                    e, peer
+                                ),
+                            }
+                        }
+                        if !sent {
+                            // 无条件补一次 CreatePermission：perm 丢了就重建；若仍处
+                            // Pending 则是幂等空转（rtc-turn 内部按地址去重，不会重发请求）。
+                            if let Ok(mut r) = client.relay(relay_addr) {
+                                if let Err(e) = r.create_permission(now, peer) {
+                                    warn!("[turn] 补建 permission 失败: {:?} peer={}", e, peer);
+                                }
+                            }
+                            if pending_sends.len() < MAX_PENDING_SENDS {
+                                pending_sends.push(PendingSend { peer, data, queued_at: now });
+                            } else {
+                                warn!("[turn] 待发队列已满，丢弃发往 {} 的中继包", peer);
                             }
                         }
                     }
                     Cmd::Permission { peer } => {
-                        if let Ok(mut r) = client.relay(relay_addr) {
+                        // TURN 的 CreatePermission 要求 XOR-PEER-ADDRESS 与 relay 地址同族，
+                        // 异族请求服务端必定回 443 Peer Address Family Mismatch；而 rtc-turn
+                        // 收到错误响应会把该 peer 从 perm_map 里删掉，反把建权状态搅乱（实测
+                        // 11 次 443 紧邻 10 次 send_to 失败）。iPhone 在蜂窝下会同时广播 IPv4
+                        // srflx 与 IPv6 候选，故必须在本地就按地址族挡掉，只建可能生效的一族。
+                        if peer.is_ipv4() != relay_addr.is_ipv4() {
+                            info!(
+                                "[turn] 跳过异地址族建权: peer={} relay={}",
+                                peer, relay_addr
+                            );
+                        } else if let Ok(mut r) = client.relay(relay_addr) {
                             if let Err(e) = r.create_permission(now, peer) {
-                                warn!("[turn] create_permission 失败: {:?}", e);
+                                warn!("[turn] create_permission 失败: {:?} peer={}", e, peer);
                             }
                         }
                     }
@@ -208,6 +256,25 @@ impl TurnAllocation {
                         }
                     }
                 }
+            }
+
+            // 权限就绪后补发排队的中继包；超时仍未就绪则丢弃（防队列无限增长）
+            if !pending_sends.is_empty() {
+                let mut keep: Vec<PendingSend> = Vec::with_capacity(pending_sends.len());
+                for ps in pending_sends.drain(..) {
+                    if now.duration_since(ps.queued_at) > PENDING_SEND_TTL {
+                        warn!("[turn] 待发包超时丢弃: peer={}", ps.peer);
+                        continue;
+                    }
+                    match client.relay(relay_addr) {
+                        Ok(mut r) => match r.send_to(now, &ps.data, ps.peer) {
+                            Ok(()) => info!("[turn] 待发包补发成功: peer={}", ps.peer),
+                            Err(_) => keep.push(ps),
+                        },
+                        Err(_) => keep.push(ps),
+                    }
+                }
+                pending_sends = keep;
             }
 
             // 定期 Refresh 保活

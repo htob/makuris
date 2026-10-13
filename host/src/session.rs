@@ -302,8 +302,13 @@ pub async fn run_session(
     // 详见 turn.rs 头部注释。
     let mut turn_alloc: Option<crate::turn::TurnAllocation> = None;
     let mut relay_local_addr: Option<std::net::SocketAddr> = None;
-    // 已建 TURN permission 的对端公网 IP（permission 按 IP 匹配，去重避免每包重发）
-    let mut turn_permitted: std::collections::HashSet<std::net::IpAddr> =
+    // 已建 TURN permission 的对端地址（去重避免重复建权）。
+    //
+    // key 必须是含端口的完整 SocketAddr：rtc-turn 的 perm_map 正是以 SocketAddr
+    // 为索引（relay.rs:52），send_to 查询时也带真实端口，且 create_permission
+    // 全程不把端口规范化为 0。若这里按 IP 去重、或建权时传 ip:0，两边 key 永远
+    // 对不上，permission 形同虚设，中继通道会直接卡死。
+    let mut turn_permitted: std::collections::HashSet<std::net::SocketAddr> =
         std::collections::HashSet::new();
     if let Some(turn_cfg) = crate::stream::host_turn_config() {
         let turn_url = format!("turn:{}", turn_cfg.turn_addr);
@@ -331,7 +336,22 @@ pub async fn run_session(
                 let candidate = relay_cfg
                     .new_candidate_relay()
                     .map_err(|e| anyhow::anyhow!("构造 relay 候选失败: {}", e))?;
-                let candidate_str = candidate.marshal();
+                // 【踩坑记录，勿再"修"】marshal() 只输出候选体
+                //   "turn49210 1 udp 14849 203.0.113.10 49210 typ relay raddr 0.0.0.0 rport 0"
+                // **不含 SDP 属性名里的 "candidate:" 前缀**，该前缀必须由调用方补上
+                // （rtc 库自己也这么做：candidate.rs:226 是
+                //   `format!("candidate:{}", candidate.marshal())`）。
+                //
+                // 为什么这行前缀是致命的：host/srflx 候选走
+                // RTCIceCandidate::from(&candidate).to_json()（自带前缀，故能内嵌进 offer
+                // SDP，局域网直连一直正常），唯独 relay 候选这里手写 marshal() 漏了前缀。
+                // relay 候选只能在 offer 之后靠 trickle 单发（Allocate 要先连上云端），
+                // 于是 iOS 侧拿到 "turn49210 1 udp …" 后由 RTCIceCandidate(sdp:) 解析失败、
+                // 被 libwebrtc **静默丢弃**——iPhone 永远不知道可以经 relay 回包，一个包都
+                // 不往 relay 发（云端 tcpdump 实证：dst 203.0.113.40 = 369 包，
+                // src 203.0.113.40 = 0 包），打洞失败后毫无兜底，4G 下永远卡在
+                // "正在建立视频通道"后连接超时。
+                let candidate_str = format!("candidate:{}", candidate.marshal());
                 // add_local_candidate 接受 RTCIceCandidateInit（非 async），把 relay 候选
                 // 注入本端 ICE agent 参与连通性检查；url 字段供 getStats 归因到 TURN 服务器
                 pc.add_local_candidate(RTCIceCandidateInit {
@@ -494,15 +514,17 @@ pub async fn run_session(
             res = socket.recv_from(&mut buf) => {
                 match res {
                     Ok((n, peer_addr)) => {
-                        // 路线 A：见到 iPhone 公网地址 → 为其建 TURN permission
-                        // （按 IP 匹配；iPhone 发给 relay 的 STUN 有重传，建权稍晚不致失败）
+                        // 路线 A（补充）：本机 socket 直接收到对端的包 → 为该地址建权。
+                        //
+                        // 必须用带真实端口的 peer_addr：rtc-turn 的 perm_map 以
+                        // SocketAddr 为 key，send_to 查询时也带真实端口，传 ip:0
+                        // 会插进一个永远查不到的条目（permission 形同虚设）。
+                        // 主路径已改为「拿到候选就建权」（见 RemoteIce 分支），
+                        // 这里只兜底覆盖 prflx 等未公告的地址。
                         if let Some(alloc) = turn_alloc.as_ref() {
-                            if turn_permitted.insert(peer_addr.ip()) {
+                            if turn_permitted.insert(peer_addr) {
                                 tracing::info!("[session] 为 {} 创建 TURN permission", peer_addr);
-                                alloc.create_permission(std::net::SocketAddr::new(
-                                    peer_addr.ip(),
-                                    0,
-                                ));
+                                alloc.create_permission(peer_addr);
                             }
                         }
                         pc.handle_read(TaggedBytesMut {
@@ -594,6 +616,19 @@ pub async fn run_session(
                                     // trickle 阶段才出现；不打这行就会把「SDP 里没
                                     // 等到」误判成「对端拿不到公网地址」。
                                     tracing::info!("[session] 补加候选: {}", init.candidate);
+                                    // 早到的候选同样要建权：它们往往正是对端真正
+                                    // 可用的公网地址，漏掉就等于回到死锁。
+                                    if let Some(peer) = candidate_addr(&init.candidate) {
+                                        if let Some(alloc) = turn_alloc.as_ref() {
+                                            if turn_permitted.insert(peer) {
+                                                tracing::info!(
+                                                    "[session] 预建 TURN permission（早到候选）: {}",
+                                                    peer
+                                                );
+                                                alloc.create_permission(peer);
+                                            }
+                                        }
+                                    }
                                     if let Err(e) = pc.add_remote_candidate(init) {
                                         tracing::warn!("[session] 迟到的候选补加失败: {}", e);
                                     }
@@ -605,6 +640,47 @@ pub async fn run_session(
                     }
                     Some(SessionEvent::RemoteIce { candidate, sdp_mid, sdp_mline_index }) => {
                         tracing::info!("[session] 收到 trickle 候选: {}", candidate);
+                        // 路线 B：拿到对端候选就立刻预建 TURN permission。
+                        //
+                        // 原路线 A 只在「本机 UDP socket 直接收到对端的包」时才建权，
+                        // 但对端若也只能经 relay 送达（它自己的入站同样被挡），包永远
+                        // 进不来 → permission 永远不建 → send_to 本地返回 ErrNoPermission
+                        // → 中继通道死锁（实测 Windows 被控端 0 帧、164 次 send_to 失败，
+                        // 云端 coturn 对该设备 CREATE_PERMISSION 零记录）。
+                        // 候选地址本身就是对端公网地址，无需等包到再建权。
+                        if let Some(peer) = candidate_addr(&candidate) {
+                            // 只为与 relay 同地址族的候选建权。
+                            //
+                            // TURN 的 CreatePermission 要求 XOR-PEER-ADDRESS 与 relay
+                            // 地址同族，混入异族地址服务端直接回 443 Peer Address Family
+                            // Mismatch。iPhone 在蜂窝下会同时给出 IPv4（171.x 公网 srflx）
+                            // 与 IPv6（240e:/2409:/fd1b:）候选，而 host 的 relay 是 IPv4，
+                            // 把 IPv6 一并送去建权就会污染批次，连带 IPv4 的权限也建不上
+                            // → 之后经 relay 回包全部 send_to 失败 ErrNoPermission，中继
+                            // 通道形同虚设（实测 4G 会话：iPhone 蜂窝侧收包 0、Windows
+                            // 推流 0 帧；局域网会话不经 relay 故不受影响，这也是「内网能
+                            // 连、4G 连不上」长期并存的原因）。
+                            let family_ok = match relay_local_addr {
+                                Some(relay) => relay.is_ipv4() == peer.is_ipv4(),
+                                None => true,
+                            };
+                            if family_ok {
+                                if let Some(alloc) = turn_alloc.as_ref() {
+                                    if turn_permitted.insert(peer) {
+                                        tracing::info!("[session] 预建 TURN permission: {}", peer);
+                                        alloc.create_permission(peer);
+                                    }
+                                }
+                            } else {
+                                tracing::debug!(
+                                    "[session] 跳过异族候选的 TURN permission（relay 为 {}）: {}",
+                                    relay_local_addr
+                                        .map(|r| if r.is_ipv4() { "IPv4" } else { "IPv6" })
+                                        .unwrap_or("?"),
+                                    peer
+                                );
+                            }
+                        }
                         let init = RTCIceCandidateInit {
                             candidate,
                             sdp_mid,
@@ -853,4 +929,27 @@ pub async fn start_session(
     }
 
     Some(event_tx)
+}
+
+/// 从 ICE 候选原文里取出对端的 `ip:port`，用于预建 TURN permission。
+///
+/// 候选文本格式固定：
+///   `candidate:<id> <foundation> <transport> <priority> <IP> <port> typ <类型> [...]`
+/// 故 IP 与端口恒在第 5、6 个空白分隔字段上（IPv6 地址不含空格，同样占一格）。
+///
+/// 必须返回**带真实端口**的 SocketAddr：rtc-turn 的 perm_map 以 SocketAddr 为 key，
+/// `send_to` 查询时也带真实端口，且 `create_permission` 全程不把端口规范化为 0
+/// （见 rtc-turn-0.21.0/src/client/relay.rs:52/194 与 create_permissions）。
+/// 传 ip:0 会插进一个永远查不到的条目，permission 形同虚设。
+///
+/// 解析失败返回 None：调用方据此跳过建权，直连照常尝试，绝不因候选文本异常中断会话。
+fn candidate_addr(candidate: &str) -> Option<std::net::SocketAddr> {
+    let mut it = candidate.split_whitespace();
+    // 跳过 candidate: / foundation / transport / priority 四个字段
+    for _ in 0..4 {
+        it.next()?;
+    }
+    let ip: std::net::IpAddr = it.next()?.parse().ok()?;
+    let port: u16 = it.next()?.parse().ok()?;
+    Some(std::net::SocketAddr::new(ip, port))
 }

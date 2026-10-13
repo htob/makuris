@@ -200,6 +200,12 @@ impl TurnAllocation {
         // （收到任何 CreatePermission 错误响应时它都会 perm_map.remove），此后该 peer
         // 永久发不出包 —— 实测 4G 中继下 Windows→iPhone 方向 0 包、会话 Failed 即此因。
         let mut pending_sends: Vec<PendingSend> = Vec::new();
+        // CreatePermission 失败日志的限流计数。
+        //
+        // 异族建权被服务端拒绝是预期内的（本地已按族挡过一轮，这里兜住 rtc-turn
+        // 内部其它路径发出的请求），逐条 warn 会把日志刷成十几 MB 却毫无信息量
+        // ——实测一次会话就刷满。留计数足够判断「发生过、多少次」。
+        let mut perm_error_count: u64 = 0;
 
         loop {
             let now = Instant::now();
@@ -218,8 +224,16 @@ impl TurnAllocation {
                                 ),
                             }
                         }
-                        if !sent {
-                            // 无条件补一次 CreatePermission：perm 丢了就重建；若仍处
+                        // 只为与 relay 同族的 peer 补建权限与入队。
+                        //
+                        // 补建本身是必要的（perm 条目会被 rtc-turn 就地删除），但异族
+                        // 请求服务端必回 443 Peer Address Family Mismatch，而 rtc-turn
+                        // 收到任何 CreatePermission 错误响应都会把该 peer 从 perm_map
+                        // 删掉——异族请求不但白费，还会把同一轮里其他 peer 的建权状态
+                        // 一起搅乱（实测 443 与 send_to 失败交替刷屏）。异族地址根本
+                        // 送不出中继包，故不入队，免得待发队列被永远发不出的包占满。
+                        if !sent && peer.is_ipv4() == relay_addr.is_ipv4() {
+                            // 补一次 CreatePermission：perm 丢了就重建；若仍处
                             // Pending 则是幂等空转（rtc-turn 内部按地址去重，不会重发请求）。
                             if let Ok(mut r) = client.relay(relay_addr) {
                                 if let Err(e) = r.create_permission(now, peer) {
@@ -335,7 +349,15 @@ impl TurnAllocation {
                         error!("[turn] 分配错误（可能已失效）: {:?}", e);
                     }
                     Event::CreatePermissionError(_, e) => {
-                        warn!("[turn] CreatePermission 失败: {:?}", e);
+                        // 限流：异族建权被拒是预期内的，逐条 warn 只会把日志撑爆
+                        // （实测一次会话就刷出十几 MB），留计数足够定位。
+                        perm_error_count += 1;
+                        if perm_error_count % 20 == 1 {
+                            warn!(
+                                "[turn] CreatePermission 失败（累计 {} 次，每 20 条报一次）: {:?}",
+                                perm_error_count, e
+                            );
+                        }
                     }
                     _ => {}
                 }

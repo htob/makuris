@@ -568,7 +568,28 @@ extension WebRTCSession: RTCPeerConnectionDelegate {
               + "code=\(event.errorCode) text=\(event.errorText)")
     }
 
+    /// 从候选行里取地址字段判断是否 IPv6。
+    ///
+    /// SDP 形如 `candidate:1 1 udp 2130706431 240e:xxx::1 54321 typ host ...`，
+    /// 第 5 段是地址：IPv6 必含冒号，IPv4 必不含。
+    private static func isIPv6Candidate(_ sdp: String) -> Bool {
+        let fields = sdp.split(separator: " ")
+        guard fields.count > 4 else { return false }
+        return fields[4].contains(":")
+    }
+
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
+        // 公网通道不下发 IPv6 候选。
+        //
+        // 被控端的 TURN relay 出口是 IPv4，它拿 IPv6 候选去建转发许可会被服务端
+        // 直接拒（443 Peer Address Family Mismatch）；更麻烦的是它收到该错误会把
+        // 该 peer 的 perm 条目一并删除，连 IPv4 的权限也建不上 → 中继死锁、会话
+        // Failed、共推送 0 帧（实测云端会话被控端日志正是如此）。局域网直连不经
+        // relay，故只在公网通道上收口。
+        if signalingClient?.isCloudRelay == true, Self.isIPv6Candidate(candidate.sdp) {
+            print("[webrtc] 公网通道跳过 IPv6 候选: \(candidate.sdp.prefix(60))")
+            return
+        }
         // 发送本地 ICE candidate 给 host
         signalingClient?.sendIce(
             candidate: candidate.sdp,

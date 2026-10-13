@@ -244,11 +244,20 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 let _ = tx.send(Message::Text(ack));
                 // 注册成功后紧接着下发时效 TURN 凭证（配了 MAKURIS_TURN_SECRET 才发）。
                 // 凭证不走源码而是运行时下发，源码零秘密；username 内嵌过期时间，
-                // 到期由 coturn 自动拒绝，无需吊销。设备重连即重新签发，天然刷新。
+                // 到期由 coturn 自动拒绝，无需吊销。
+                //
+                // 但「设备重连即重新签发」绝不等于刷新机制：被控端常年在线、从不重连，
+                // 只在注册那一刻拿到一份凭证，ttl 一到就永久 401。2026-10-12 实测踩过：
+                // Windows 被控端 18:06 领证、20:06 过期、20:07 起连续 237 次 401，iPhone
+                // 走蜂窝再也连不上，而 Mac 因重连过 3 次反而「看起来正常」。所以这里必须
+                // 再挂一个续发循环，理由与节奏见 turn_refresh_loop。
                 if let Some(issuer) = &state.turn {
                     if let Some(msg) = issuer.issue(&id) {
                         let _ = tx.send(Message::Text(serde_json::to_string(&msg).unwrap()));
                     }
+                    // 每条连接各挂一个续发任务：tx 是本连接专属的发送端，连接一断
+                    // send 就失败、任务自行退出，不会随注册次数累积。
+                    tokio::spawn(turn_refresh_loop(state.clone(), id.clone(), tx.clone()));
                 }
             }
             SignalMsg::Ping => {
@@ -362,4 +371,57 @@ async fn main() -> anyhow::Result<()> {
         axum::serve(listener, app).await?;
     }
     Ok(())
+}
+
+/// 周期性给某台设备续发 TURN 时效凭证。
+///
+/// 为什么必须有这个循环：凭证是 ttl 秒过期的 HMAC 时效串，而 host 只在「注册成功」
+/// 那一刻收到一份。被控端常年在线、不重连的话，凭证一到期，TURN Refresh 就永久 401，
+/// 中继通道彻底不可用——这正是 2026-10-12 实测到的故障：Windows 被控端 18:06:25 拿到
+/// 凭证，20:06 过期，20:07:11 起连续 237 次 `Refresh error response (error 401)`，
+/// iPhone 走蜂窝再也连不上；同一时刻 Mac 却「能连」，只是因为它重连过 3 次、每次重连
+/// 都重新领了一份新凭证。所以「重启一下就好了」是假象，不修续发机制必然复发。
+///
+/// 为什么只改信令、host 与 iOS 一行都不用动：host 侧 TurnAllocation 是会话级新建
+/// （session.rs 里每次会话现场 `host_turn_config()` 从全局 TURN_CREDS 取当时最新值），
+/// 收到新凭证只是覆盖写那份 RwLock，下一个会话自然用新凭证。
+///
+/// 节奏取 ttl/3（下限 60 秒）：保证任何时刻手上的凭证都还有至少 2/3 寿命，容忍一次
+/// 推送丢失；同时避免每分钟都签发的无谓开销。
+///
+/// 退出条件：send 失败即代表这条 WebSocket 已经关掉（设备下线，或已被同 device_id
+/// 的新连接顶替），立刻结束循环。不这么做的话，每次注册都会攒下一个空转任务。
+async fn turn_refresh_loop(state: AppState, device_id: String, tx: Tx) {
+    let issuer = match state.turn.clone() {
+        Some(i) => i,
+        // 未配 MAKURIS_TURN_SECRET 时本来就不下发凭证，没有可续的东西。
+        None => return,
+    };
+    let period = std::time::Duration::from_secs((issuer.ttl / 3).max(60));
+    let mut tick = tokio::time::interval(period);
+    // 用 Delay 而非 Burst：进程繁忙时宁可顺延，也不要积压出一串无意义的连续签发。
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // 第一个 tick 是立即触发的，而注册分支刚刚同步下发过一份，跳过它避免重复推送。
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        let msg = match issuer.issue(&device_id) {
+            Some(m) => m,
+            None => break,
+        };
+        match serde_json::to_string(&msg) {
+            Ok(text) => {
+                if tx.send(Message::Text(text)).is_err() {
+                    tracing::debug!("TURN 凭证续发已停止（连接已关闭）: {}", device_id);
+                    break;
+                }
+                tracing::debug!("已续发 TURN 时效凭证: {}", device_id);
+            }
+            // 序列化失败属于编程错误，重试也不会好，退出而不是空转。
+            Err(e) => {
+                tracing::warn!("TURN 凭证序列化失败，停止续发 {}: {e}", device_id);
+                break;
+            }
+        }
+    }
 }

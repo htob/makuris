@@ -1,3 +1,4 @@
+import Network
 import SwiftUI
 
 struct ContentView: View {
@@ -6,6 +7,19 @@ struct ContentView: View {
     @StateObject private var rtcSession = WebRTCSession()
     @StateObject private var discovery = BonjourDiscovery()
     @StateObject private var store = SavedComputersStore()
+    /// 每条已保存地址各一条探测连接，用来在首页列出「这条通道下面有哪些电脑」。
+    /// 它只负责摸清每条通道里有什么，用户点某台电脑时仍走主信令连接（signaling）。
+    @StateObject private var scanner = ChannelScanner()
+
+    /// 网络环境监听：换 Wi-Fi、切蜂窝、断网又恢复，系统都会在这里报一次。
+    ///
+    /// 必须有它。切开网络后旧 WebSocket 会进入半开——TCP 不报错、失败回调也
+    /// 迟迟不来，界面上一切正常，实际消息发不出去也收不回来；App 自己察觉不到。
+    /// 而系统明确知道「网络路径变了」，这是唯一及时的可靠信号：拿到就把连接
+    /// 与扫描全部重建。
+    @State private var pathMonitor: NWPathMonitor?
+    /// 上一次的网络路径特征，用来分辨「真的换网了」与「同一条路上又回调一次」。
+    @State private var lastPathSignature: String?
 
     /// 应用前后台状态：切后台时启动保活，回前台时检查并恢复会话
     @Environment(\.scenePhase) private var scenePhase
@@ -39,12 +53,14 @@ struct ContentView: View {
         NavigationStack {
             List {
                 brandHeader
-                discoverySection
-                savedSection
-                if !signaling.devices.isEmpty { onlineSection }
+                lanChannelSection
+                savedChannelSections
+                Section {
+                    addComputerRow
+                }
             }
             .listStyle(.insetGrouped)
-            // 下拉刷新：一次把「同一 Wi-Fi 下」与「外面的网络也能连」两块都重新取
+            // 下拉刷新：把列表的两路来源都重新取一次（局域网发现 + 信令在线设备）
             .refreshable { await refreshHome() }
             // 隐藏系统列表底与导航栏底，让暖色纸背景整屏透出来。
             // 不改的话，这块会是系统白（浅色模式）——就是「整个背景是白色」的来源。
@@ -56,7 +72,7 @@ struct ContentView: View {
             // 导航栏同步透明：状态徽标与加号直接落在纸面上，不留一条突兀的白带
             .toolbarBackground(.hidden, for: .navigationBar)
             // 品牌头部已表明这是 Makuris，标题留空把纵向空间让给它，
-            // 页面归属由分组标题（同一 Wi-Fi 下 / 已保存）自己说清楚。
+            // 这一页只有一类东西（电脑），下面的分组标题一句话就说清楚了。
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -90,6 +106,16 @@ struct ContentView: View {
             .onAppear {
                 // 局域网发现：打开就开始找，用户不需要做任何事
                 discovery.start()
+                // 网络环境监听：切网之后要能自己重连，靠的就是这条通知
+                startNetworkMonitor()
+                // 每条已保存的地址各连一遍，把「这条通道下面有哪些电脑」取回来。
+                // 不做这一步的话，用户添加的地址就只是一行字，看不出后面有什么。
+                scanSavedChannels()
+            }
+            // 地址增删改之后重扫。比较键用「id+地址+名字」拼出来：
+            // 只要这三者之一变了就该重新连，而不用要求 SavedComputer 本身可比。
+            .onChange(of: store.computers.map { "\($0.id)|\($0.address)|\($0.displayName)" }) { _ in
+                scanSavedChannels()
             }
             .onChange(of: scenePhase) { phase in
                 handleScenePhase(phase)
@@ -146,21 +172,21 @@ struct ContentView: View {
 
     // MARK: - 分区
 
-    /// 同一 Wi-Fi 下自动发现的电脑（零配置，主路径）
+    /// 首页只有两层：上面是通道，下面是这条通道里的电脑。
+    ///
+    /// 为什么按通道分层：首页要回答的是「用哪条路连哪台电脑」。同一条路里的电脑，
+    /// 连上的代价是一样的，所以「通道」是一层、「电脑」是它下面的条目——像目录树
+    /// 那样分下去，而不是把两个维度摊平在同一层里。
+    ///
+    /// 为什么同一台电脑可以出现在多条通道下：那是它此刻确实拥有的多个入口，
+    /// 不是重复条目。用户要看得见这些路，再自己挑一条。
     @ViewBuilder
-    private var discoverySection: some View {
+    private var lanChannelSection: some View {
         Section {
             if discovery.permissionDenied {
                 permissionHint
             } else if discovery.computers.isEmpty {
-                HStack(spacing: 10) {
-                    ProgressView()
-                    Text(discovery.isReady ? "正在查找附近的电脑…" : "正在启动…")
-                        .font(.footnote)
-                        .foregroundColor(Brand.ink.opacity(0.6))
-                }
-                .padding(.vertical, 4)
-                .listRowBackground(Brand.cardPaper)
+                searchingRow
             } else {
                 ForEach(discovery.computers) { computer in
                     Button {
@@ -168,86 +194,144 @@ struct ContentView: View {
                     } label: {
                         computerRow(
                             title: computer.serviceName,
-                            subtitle: computer.subtitle,
+                            subtitle: computer.platform,
                             icon: "desktopcomputer")
                     }
                     .buttonStyle(.plain)
                 }
             }
         } header: {
-            Text("同一 Wi-Fi 下")
-                .foregroundColor(Brand.ink.opacity(0.5))
-        } footer: {
-            if !discovery.permissionDenied && !discovery.computers.isEmpty {
-                Text("打开被控电脑上的 Makuris 即会自动出现在这里。")
-                    .foregroundColor(Brand.ink.opacity(0.48))
+            channelHeader("局域网", caption: "自动扫描")
+        }
+    }
+
+    /// 用户自己添加的地址：一条地址就是一条通道，通道下面是这条地址上在线的电脑。
+    ///
+    /// 这里不把「同一台电脑」从某条通道里去掉：它在两条通道下都出现，说明两条路
+    /// 都通，而不是列表重复。去重会把一条真实可用的入口藏起来。
+    @ViewBuilder
+    private var savedChannelSections: some View {
+        ForEach(scanner.channels) { channel in
+            Section {
+                channelRows(channel)
+            } header: {
+                channelHeader(channel.title, caption: channel.address)
             }
         }
     }
 
-    /// 手动保存的电脑（跨网络/公网场景的兜底，可增删）
+    /// 一条通道下面的内容：有电脑就列电脑，没扫到就给一句状态。
+    /// 空通道必须说话，否则那条通道看起来像一块坏掉的空白。
     @ViewBuilder
-    private var savedSection: some View {
-        Section {
-            if store.computers.isEmpty {
-                Text("还没有保存的电脑")
-                    .font(.footnote)
-                    .foregroundColor(Brand.ink.opacity(0.55))
-                    .listRowBackground(Brand.cardPaper)
+    private func channelRows(_ channel: ChannelScanner.Channel) -> some View {
+        switch channel.state {
+        case .scanning:
+            channelStatusRow("正在连接…", spinning: true)
+        case .online(let devices):
+            if devices.isEmpty {
+                channelStatusRow("没有在线的电脑", spinning: false)
             } else {
-                ForEach(store.computers) { computer in
+                ForEach(devices) { device in
                     Button {
-                        joinSaved(computer)
+                        joinChannel(channel, device: device)
                     } label: {
                         computerRow(
-                            title: computer.displayName,
-                            subtitle: computer.address,
-                            icon: "externaldrive.connected.to.line.below")
+                            title: deviceTitle(device),
+                            subtitle: device.platform ?? "",
+                            icon: "desktopcomputer")
                     }
                     .buttonStyle(.plain)
-                }
-                .onDelete { indexSet in
-                    for idx in indexSet {
-                        store.remove(store.computers[idx])
+                    // 删除入口挂在通道里的每一行上，文案写明删的是通道：
+                    // 电脑是扫出来的，删不掉，能被删的只有用户自己添加的那条地址。
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            removeChannel(channel)
+                        } label: {
+                            Label("删除通道", systemImage: "trash")
+                        }
                     }
                 }
             }
-        } header: {
-            Text("已保存")
-                .foregroundColor(Brand.ink.opacity(0.5))
-        } footer: {
-            Text("用于不在同一 Wi-Fi 的电脑，点右上角加号添加。左滑可删除。")
-                .foregroundColor(Brand.ink.opacity(0.48))
+        case .failed(let reason):
+            channelStatusRow("连不上：\(reason)", spinning: false)
         }
     }
 
-    /// 连上信令服务器后实际在线的电脑。
-    ///
-    /// 它和上面「同一 Wi-Fi 下」列的是同一类东西——都是电脑，不是另一种设备。
-    /// 差别只在走哪条路：上面那条是局域网直连（Bonjour 发现，快到毫秒级），
-    /// 这条是经信令服务器中转牵线，手机在外面（蜂窝网/别的 Wi-Fi）时只有它能用。
-    /// 所以同一台电脑在两条都通时会各出现一次，这是正常的，不是两台机器。
-    @ViewBuilder
-    private var onlineSection: some View {
-        Section {
-            ForEach(signaling.devices) { device in
-                Button {
-                    enter(deviceId: device.device_id)
-                } label: {
-                    computerRow(
-                        title: device.device_id,
-                        subtitle: device.platform ?? "未知系统",
-                        icon: "bolt.horizontal.circle")
-                }
-                .buttonStyle(.plain)
+    /// 通道标题：上面一行是通道名，下面一行小字补它的来处（自动扫描 / 地址）。
+    /// 两层信息都在标题里说完，行内就不必再重复一遍地址。
+    private func channelHeader(_ title: String, caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(Brand.ink.opacity(0.72))
+            if !caption.isEmpty {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundColor(Brand.ink.opacity(0.42))
             }
-        } header: {
-            Text("外面的网络也能连")
-                .foregroundColor(Brand.ink.opacity(0.5))
-        } footer: {
-            Text("这些是连在同一信令服务器上的电脑。和上面「同一 Wi-Fi 下」可能是同一台——这里走服务器中转，不在家时用得到。")
-                .foregroundColor(Brand.ink.opacity(0.48))
         }
+        // 关掉系统对分组标题的全大写转换，否则地址会被折成大写，认不出来
+        .textCase(nil)
+    }
+
+    /// 通道内的一句状态（正在连 / 没有电脑 / 连不上）。
+    @ViewBuilder
+    private func channelStatusRow(_ text: String, spinning: Bool) -> some View {
+        HStack(spacing: 10) {
+            if spinning { ProgressView() }
+            Text(text)
+                .font(.footnote)
+                .foregroundColor(Brand.ink.opacity(0.6))
+        }
+        .padding(.vertical, 4)
+        .listRowBackground(Brand.cardPaper)
+    }
+
+    /// 服务器侧报来的电脑名。老版本被控端不上报 name，退回设备 ID。
+    private func deviceTitle(_ device: DeviceInfo) -> String {
+        if let name = device.name, !name.isEmpty { return name }
+        return device.device_id
+    }
+
+    /// 局域网组空着时的反馈：是还在找，还是确实没找到。两句必须分开——
+    /// 前者不能让用户以为坏了，后者不能让用户继续干等。
+    @ViewBuilder
+    private var searchingRow: some View {
+        HStack(spacing: 10) {
+            if !discovery.isReady { ProgressView() }
+            Text(discovery.isReady ? "没找到电脑" : "正在查找…")
+                .font(.footnote)
+                .foregroundColor(Brand.ink.opacity(0.6))
+        }
+        .padding(.vertical, 4)
+        .listRowBackground(Brand.cardPaper)
+    }
+
+    /// 手动填地址的入口。摆在列表最后一行、与电脑同级——它是「再加一台」的
+    /// 动作，藏在导航栏角落没人找得到。
+    private var addComputerRow: some View {
+        Button {
+            showAddSheet = true
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(Brand.ink.opacity(0.06))
+                        .frame(width: 38, height: 38)
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(Brand.accentDeep)
+                }
+                Text("添加电脑")
+                    .font(.subheadline)
+                    .foregroundColor(Brand.ink.opacity(0.7))
+                Spacer()
+            }
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .listRowBackground(Brand.cardPaper)
+        }
+        .buttonStyle(.plain)
     }
 
     private var permissionHint: some View {
@@ -255,7 +339,7 @@ struct ContentView: View {
             Text("无法搜索局域网")
                 .font(.subheadline).bold()
             Text("请在「设置 → 隐私与安全性 → 本地网络」中允许 Makuris 访问，"
-                 + "或改用「已保存」里的地址手动连接。")
+                 + "或点下方「添加电脑」手填地址连接。")
                 .font(.footnote)
                 .foregroundColor(Brand.ink.opacity(0.62))
         }
@@ -263,6 +347,8 @@ struct ContentView: View {
         .listRowBackground(Brand.cardPaper)
     }
 
+    /// 一行电脑：图标 + 名字 + 系统。走哪条路已经由所在分组说明，
+    /// 行内不再重复表达它——那会让每一行都多背一个与分组重复的信息。
     private func computerRow(title: String, subtitle: String, icon: String) -> some View {
         HStack(spacing: 14) {
             // 淡琥珀圆底衬图标：手绘风不用系统那种实心色块，圆底与 logo 的信号弧同色
@@ -278,9 +364,12 @@ struct ContentView: View {
                 Text(title)
                     .font(.headline)
                     .foregroundColor(Brand.ink)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundColor(Brand.ink.opacity(0.55))
+                // 没有系统信息就不显示这一行，不用「未知系统」占位
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundColor(Brand.ink.opacity(0.55))
+                }
             }
             Spacer()
             Image(systemName: "chevron.right")
@@ -338,7 +427,7 @@ struct ContentView: View {
     ///
     /// 为什么不提示成功/失败：刷新结果在界面上本来就自明（列表变了没有、
     /// 状态徽标是绿是灰）。从没连过信令服务器时也只刷局域网、不弹提示——
-    /// 那条路径下「外面的网络也能连」本来就该是空的，弹一句话反而像出了错。
+    /// 那种情况下列表本来就只剩局域网那一台，弹一句话反而像出了错。
     @MainActor
     private func refreshHome() async {
         // ① 局域网：重建浏览器，强制重新查询一次
@@ -347,11 +436,22 @@ struct ContentView: View {
         // ② 在线设备：连着就重新要一份列表；断开但之前连过就顺手重连——
         // 重连成功后服务器会把设备列表一起推回来，不必再要一次。
         // 从没连过（没有上次地址）时什么都不做：没有可连的地址。
-        if signaling.state.isConnected {
+        //
+        // 但「连着」得分真假。切网之后连接会进入半开：state 仍是「已就绪」，
+        // 消息却已经发不出去也收不回。这时往下发请求等于对空气说话——用户
+        // 下拉十次也不会有回应，只能重启 App。所以先用心跳问一句「还活着吗」，
+        // 不健康就直接重建。
+        if signaling.isHealthy {
             signaling.refreshDeviceList()
+        } else if case .connecting = signaling.state {
+            // 正在连：别打扰它，让它连完再说
         } else {
-            signaling.reconnectIfNeeded()
+            signaling.forceReconnect()
         }
+
+        // ③ 每条通道：同一条地址不会重建连接（由 ChannelScanner 内部判断），
+        // 只再确认一次这些地址下面有没有新上线的电脑
+        scanSavedChannels()
 
         try? await Task.sleep(nanoseconds: 1_000_000_000)
     }
@@ -375,17 +475,20 @@ struct ContentView: View {
         showRemoteScreen = true
     }
 
-    /// 点已保存的电脑：地址可能指向中心服务器（下面挂多台），
-    /// 因此连上后进入第一台在线设备
-    private func joinSaved(_ computer: SavedComputer) {
-        let url = computer.normalizedURL
+    /// 点某条通道下的某台电脑：连这条通道的地址，然后进入指定的那一台。
+    ///
+    /// 与旧「点已保存地址」的关键差别是要指定设备：一条地址下面可能挂着好几台，
+    /// 不能谁先上线就进谁。与「点局域网发现的电脑」的差别只在地址从哪来。
+    private func joinChannel(_ channel: ChannelScanner.Channel, device: DeviceInfo) {
+        guard let saved = store.computers.first(where: { $0.id == channel.id }) else { return }
+        let url = saved.normalizedURL
         // 地址解析不出来时也要说话。原先这里静默 return，用户点了毫无反应，
         // 而原因（保存的地址格式不对）就藏在那条被吞掉的返回值里。
         guard !url.isEmpty else {
-            signaling.reportInvalidAddress(computer.address)
+            signaling.reportInvalidAddress(saved.address)
             return
         }
-        pendingJoin = .firstAvailable
+        pendingJoin = .specific(device.device_id)
         // 走中心服务器才需要接入密钥。没填也能连，只是服务器若启用了鉴权
         // 会把注册驳回，届时界面上是「一直找不到电脑」。
         signaling.accessKey = appState.accessKey
@@ -393,6 +496,23 @@ struct ContentView: View {
         beginJoinWait()
         // 与局域网路径同理：立刻进远程界面，等待反馈只保留那一层遮罩
         showRemoteScreen = true
+    }
+
+    /// 删掉一条通道。删除入口挂在通道内的行上，文案写明删的是通道——
+    /// 电脑是扫出来的，删不掉，别让人以为删掉的是那台电脑。
+    private func removeChannel(_ channel: ChannelScanner.Channel) {
+        guard let saved = store.computers.first(where: { $0.id == channel.id }) else { return }
+        store.remove(saved)
+    }
+
+    /// 让每条已保存的地址各连一遍，问出它下面有哪些电脑。
+    ///
+    /// 地址没变时不重建连接（由 ChannelScanner 内部判断），所以下拉刷新、进出首页
+    /// 都可以放心地反复调用，不会把健康的连接拆掉重建。
+    private func scanSavedChannels() {
+        scanner.scan(store.computers,
+                     deviceId: appState.deviceId,
+                     accessKey: appState.accessKey)
     }
 
     /// 连接信令服务器；若与同一地址的连接还活着，就直接复用、不重连。
@@ -461,6 +581,62 @@ struct ContentView: View {
     /// 两件事都要做：保活让连接在后台「大概率不断」，但 iOS 在内存紧张时
     /// 仍可能回收进程、网络切换时也会掐断 socket。只做保活的话，一旦真断了
     /// 用户切回来就是一屏黑，只能退出重进；所以回前台再补一次自愈检查。
+    // MARK: - 网络环境
+
+    /// 起监听：系统一旦报告网络路径变化，就把所有依赖网络的东西重建一遍。
+    private func startNetworkMonitor() {
+        guard pathMonitor == nil else { return }  // 只起一次
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { path in
+            // 回调在后台队列：界面与信令的更新都回主线程做
+            DispatchQueue.main.async { handleNetworkChange(path) }
+        }
+        monitor.start(queue: DispatchQueue(label: "cc.makwo.makuris.path"))
+        pathMonitor = monitor
+    }
+
+    /// 网络路径变了：把「靠网络的东西」全部重建。
+    ///
+    /// 为什么是重建而不是「检查一下还连着没」：切网后旧连接会半开——TCP 不报错、
+    /// 失败回调不来，从客户端内部完全看不出它已经死了。系统这条通知是唯一的
+    /// 及时信号，拿到就重建，不去猜旧连接的死活。
+    ///
+    /// 首次回调只记录、不动作：那时 onAppear 已经做过一遍同样的事，重复做会白拆
+    /// 一次刚建好的连接。
+    private func handleNetworkChange(_ path: NWPath) {
+        let signature = Self.pathSignature(path)
+        let previous = lastPathSignature
+        lastPathSignature = signature
+        guard let previous, previous != signature else { return }
+        // 断网本身不动作：等恢复的那次通知再重建，否则会连着白试几轮
+        guard path.status == .satisfied else {
+            print("[net] 网络已断开（\(signature)）")
+            return
+        }
+        print("[net] 网络环境变化 \(previous) → \(signature)，重建连接与全部扫描")
+        // 局域网发现要重来：换网后旧的浏览器还挂在旧接口上
+        discovery.restart()
+        // 主信令连接强制重建：下一条消息能不能发出去，只有重建才知道
+        signaling.forceReconnect()
+        // 每条通道也全部重连：它们的连接同样是半开状态
+        scanner.scan(store.computers,
+                     deviceId: appState.deviceId,
+                     accessKey: appState.accessKey,
+                     force: true)
+    }
+
+    /// 网络路径的特征串：接口类型 + 是否计费流量。用来分辨「真的换网了」
+    /// 与「同一条路上又回调了一次」——后者不该白拆一次好连接。
+    private static func pathSignature(_ path: NWPath) -> String {
+        var parts: [String] = [path.status == .satisfied ? "up" : "down"]
+        if path.usesInterfaceType(.wifi) { parts.append("wifi") }
+        if path.usesInterfaceType(.cellular) { parts.append("cellular") }
+        if path.usesInterfaceType(.wiredEthernet) { parts.append("ethernet") }
+        if path.usesInterfaceType(.loopback) { parts.append("loopback") }
+        if path.isExpensive { parts.append("expensive") }
+        return parts.joined(separator: "+")
+    }
+
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
@@ -481,6 +657,11 @@ struct ContentView: View {
     /// 回到前台后检查会话是否还活着，断了就重建。
     /// 幂等：连接正常时两个 reconnectIfNeeded() 都直接返回，不会白拆连接。
     private func restoreSession() {
+        // 回前台时网络可能已经换过了：最常见的场景是锁屏期间从 Wi-Fi 走到户外
+        // 变成蜂窝。这时旧连接多半已经半开，而 state 还写着「已就绪」——所以
+        // 不信 state，直接按心跳判断，不健康就重建。
+        if !signaling.isHealthy { signaling.forceReconnect() }
+
         guard showRemoteScreen else { return }
         if signaling.state.isConnected {
             rtcSession.reconnectIfNeeded()

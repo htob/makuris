@@ -378,6 +378,9 @@ class WebRTCSession: NSObject, ObservableObject {
 
         peerConnection = factory.peerConnection(
             with: config, constraints: constraints, delegate: self)
+        // 新会话从干净状态开始：上一次会话残留的早到候选不能带进来，
+        // 否则会把已经废弃的地址重新加进新的 PeerConnection。
+        pendingRemoteCandidates.removeAll()
     }
 
     private func handleRemoteSdp(type: SdpType, sdp: String, from: String) {
@@ -390,6 +393,11 @@ class WebRTCSession: NSObject, ObservableObject {
                 print("[webrtc] setRemoteDescription error: \(error)")
                 return
             }
+            // 描述就绪，立刻补加此前早到、没加进去的候选。
+            //
+            // 必须放在 createAnswer() 之前：补进去的 relay 候选要参与后续的
+            // ICE 检查，越早回到 agent 越好（host 侧已在等着这些包）。
+            self?.flushPendingRemoteCandidates()
             // 如果是 offer，创建 answer 并发回
             if type == .offer {
                 self?.createAnswer()
@@ -457,9 +465,47 @@ class WebRTCSession: NSObject, ObservableObject {
         poll()
     }
 
+    /// 早到、暂时加不进 PeerConnection 的远端候选（等 remote description 就绪后补加）。
+    ///
+    /// 为什么必须有这个队列：libwebrtc 的 add(iceCandidate) 在 remote description
+    /// 尚未设置时会直接忽略该候选（返回 Void，不抛错、不报错，静默丢弃）。
+    /// host 的中继候选是它 TURN Allocate 成功后立刻 trickle 出来的，经常赶在
+    /// offer 之前到达；被丢掉就意味着 iPhone 永远不知道可以经 relay 回包，
+    /// 中继方向只会单通（实测：host 从 relay 发的 STUN 探针有去无回、媒体 0 帧）。
+    private var pendingRemoteCandidates: [RTCIceCandidate] = []
+
     private func handleRemoteIce(candidate: String, mid: String?, mline: Int32) {
         let iceCandidate = RTCIceCandidate(sdp: candidate, sdpMLineIndex: mline, sdpMid: mid)
-        peerConnection?.add(iceCandidate)
+        guard let pc = peerConnection else {
+            // PeerConnection 都还没建起来（更早到的候选），照样排队。
+            print("[webrtc] PeerConnection 未就绪，候选入队等待: \(candidate.prefix(60))")
+            pendingRemoteCandidates.append(iceCandidate)
+            return
+        }
+        // add(iceCandidate) 返回 Void，拿不到成败，所以用 remoteDescription 是否
+        // 就绪来判断「现在交进去有没有用」——描述未就绪时 add 会被静默忽略，
+        // 这正是原先最要命的地方：候选丢了，日志里一个字都没有。
+        if pc.remoteDescription == nil {
+            // 描述未就绪属可恢复情况：入队，等 setRemoteDescription 成功后补加。
+            print("[webrtc] 远端描述未就绪，候选入队等待: \(candidate.prefix(60))")
+            pendingRemoteCandidates.append(iceCandidate)
+        } else {
+            pc.add(iceCandidate)
+            print("[webrtc] 远端候选已加入: mid=\(mid ?? "-") \(candidate.prefix(60))")
+        }
+    }
+
+    /// 远端描述就绪后，按到达顺序补加此前入队的候选。
+    ///
+    /// 保持到达顺序：乱序补加可能让 ICE agent 先挑到较早失效的地址。
+    private func flushPendingRemoteCandidates() {
+        guard let pc = peerConnection, !pendingRemoteCandidates.isEmpty else { return }
+        let queued = pendingRemoteCandidates
+        pendingRemoteCandidates.removeAll()
+        for cand in queued {
+            pc.add(cand)
+        }
+        print("[webrtc] 补加早到候选 \(queued.count) 条")
     }
 }
 

@@ -130,6 +130,9 @@ async fn handle_viewer(stream: TcpStream, device_id: String) -> Result<()> {
                             device_id: device_id.clone(),
                             role: Role::Host,
                             platform: Some(platform_name().to_string()),
+                            // 局域网直连这条路也带上主机名，App 在哪个通道下
+                            // 看到的都是同一套展示逻辑，不必两套。
+                            name: Some(hostname()),
                         }],
                     },
                 );
@@ -498,7 +501,10 @@ fn start_bonjour(device_id: &str, port: u16) -> bool {
 // 本机局域网地址探测已抽到 crate::netinfo（三处共用：此处广播、WebRTC 候选、
 // 公网自检 bin），实现与「为什么不能用 connect 外网取 local_addr」的说明见该模块。
 
-fn hostname() -> String {
+/// 本机名字（mDNS 服务名、TXT 的 name、以及上报信令的设备名共用）。
+/// pub：main.rs 注册信令时也要用它，两处必须一致，否则同一个通道下
+/// 局域网发现的名字和信令列表的名字会对不上。
+pub fn hostname() -> String {
     std::process::Command::new("hostname")
         .output()
         .ok()

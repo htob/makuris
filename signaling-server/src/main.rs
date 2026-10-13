@@ -43,8 +43,11 @@ type Tx = mpsc::UnboundedSender<Message>;
 
 #[derive(Clone)]
 struct AppState {
-    /// device_id -> (该连接的消息发送端, 角色)
-    peers: Arc<DashMap<String, (Tx, Role)>>,
+    /// device_id -> (该连接的消息发送端, 角色, 被控端上报的可读名字)
+    ///
+    /// 名字必须存进表里而不是注册时转发一次就走：viewer 是随时来问设备列表的，
+    /// 到那时得能答出每台电脑叫什么。
+    peers: Arc<DashMap<String, (Tx, Role, Option<String>)>>,
     /// 接入密钥。None 表示开放模式（局域网自用场景）。
     access_key: Option<Arc<String>>,
     /// TURN 时效凭证签发器。None = 未配 MAKURIS_TURN_SECRET，不下发
@@ -212,7 +215,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             continue;
         };
         match signal {
-            SignalMsg::Register { device_id: id, role, key_proof } => {
+            SignalMsg::Register { device_id: id, role, key_proof, name } => {
                 // 先验接入证明，再谈注册。顺序不能反——注册动作本身会往
                 // peers 表里写东西，验过了才写，免得给未授权连接留下痕迹。
                 if let Some(key) = &state.access_key {
@@ -234,7 +237,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 // 同一 device_id 已在线时覆盖旧的：host 重启后旧连接可能还没
                 // 被回收，若不覆盖，新的注册会被挤掉、这台电脑一直显示离线。
                 // 覆盖是安全的——前提是已有证明通过，否则上面就 continue 了。
-                if let Some(old) = state.peers.insert(id.clone(), (tx.clone(), role)) {
+                if let Some(old) = state.peers.insert(id.clone(), (tx.clone(), role, name)) {
                     tracing::warn!("device_id {} 重复注册，已用新连接替换旧连接", id);
                     drop(old);
                 }
@@ -280,6 +283,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         device_id: entry.key().clone(),
                         role: Role::Host,
                         platform: None,
+                        // 名字随注册存在 peers 表里，这里原样带出。
+                        name: entry.value().2.clone(),
                     })
                     .collect();
                 let msg = serde_json::to_string(&SignalMsg::DeviceList { devices }).unwrap();

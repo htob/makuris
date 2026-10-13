@@ -17,6 +17,11 @@ struct DeviceInfo: Codable, Identifiable {
     let device_id: String
     let role: Role
     let platform: String?
+    /// 电脑自己上报的名字（主机名），如 `my-MacBook-Pro`。
+    ///
+    /// 可选：老版本被控端不上报，缺失时界面退回显示 `device_id`——但那是
+    /// `host-mac-01` 这种机器标识，用户读不懂，所以 host 侧要同步上报。
+    let name: String?
 }
 
 enum SignalMsg: Codable {

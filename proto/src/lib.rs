@@ -41,6 +41,15 @@ pub enum SignalMsg {
         role: Role,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key_proof: Option<String>,
+        /// 被控端上报的可读名字（主机名，如 `my-MacBook-Pro`）。
+        ///
+        /// 为什么需要它：`device_id` 是路由键（形如 `host-mac-01`），用来
+        /// 定位连接、不能随便改，但用户读不懂这串机器标识。名字只在展示层
+        /// 用，换名字不影响路由与已配对令牌。
+        ///
+        /// 仍然可选：老版本被控端不带这个字段，界面退回显示 `device_id`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     /// 注册成功确认
     Registered { device_id: String },
@@ -121,6 +130,12 @@ pub struct DeviceInfo {
     pub device_id: String,
     pub role: Role,
     pub platform: Option<String>,
+    /// 电脑自己上报的名字（主机名）。缺省时展示层退回 `device_id`。
+    ///
+    /// `default` 必须写：老服务器的设备列表里没有这个字段，不写的话
+    /// 新 App 解析老响应会直接失败。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl SignalMsg {
@@ -342,8 +357,12 @@ mod tests {
 
     #[test]
     fn signal_msg_roundtrip() {
-        let msg =
-            SignalMsg::Register { device_id: "host-1".into(), role: Role::Host, key_proof: None };
+        let msg = SignalMsg::Register {
+            device_id: "host-1".into(),
+            role: Role::Host,
+            key_proof: None,
+            name: None,
+        };
         let json = serde_json::to_string(&msg).unwrap();
         // 不带接入证明时该字段应被省略，老服务器才认得这条报文
         assert!(!json.contains("key_proof"), "None 时不应序列化 key_proof");
@@ -438,6 +457,7 @@ mod tests {
                 device_id: "host-1".into(),
                 role: Role::Host,
                 platform: Some("macos".into()),
+                name: Some("my-MacBook-Pro".into()),
             }],
         };
         let json = serde_json::to_string(&msg).unwrap();

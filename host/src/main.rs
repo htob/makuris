@@ -241,6 +241,10 @@ async fn main() -> Result<()> {
         device_id: device_id.clone(),
         role: Role::Host,
         key_proof: access_key().map(|k| access::register_proof(&k, &device_id)),
+        // 上报可读主机名。device_id 是路由键（host-mac-01 这种机器标识），
+        // 展示给用户没法认；名字只在界面用，不参与路由与配对，改名字不会
+        // 让已配对的令牌失效。
+        name: Some(lan::hostname()),
     };
     tx.send(Message::Text(serde_json::to_string(&reg)?.into()))?;
 

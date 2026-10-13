@@ -64,7 +64,7 @@ fi
 echo "  接入密钥: ${ACCESS_KEY:0:8}…（与两端被控端一致，值不打印）"
 
 # ---------- 2. 云端编译环境自检 ----------
-say "检查云端编译环境（$SSH_TARGET）"
+say "检查云端编译环境（${SSH_TARGET}）"
 ssh -o BatchMode=yes "$SSH_TARGET" '
   missing=""
   for t in cc ld make tar; do command -v $t >/dev/null || missing="$missing $t"; done
@@ -108,7 +108,7 @@ ssh -o BatchMode=yes "$SSH_TARGET" '
 
 # ---------- 4. 云端编译 ----------
 if [[ "$DO_BUILD" == "1" ]]; then
-    say "云端编译 $BIN_NAME（有增量缓存约 30 秒，全量约 3-5 分钟）"
+    say "云端编译 ${BIN_NAME}（有增量缓存约 30 秒，全量约 3-5 分钟）"
     ssh -o BatchMode=yes "$SSH_TARGET" "
       set -e
       source \$HOME/.cargo/env
@@ -130,7 +130,7 @@ ssh -o BatchMode=yes "$SSH_TARGET" "
 "
 
 # ---------- 5. 写环境变量文件（密钥不落仓库，600 权限）----------
-say "写 $REMOTE_ENV（chmod 600）"
+say "写 ${REMOTE_ENV}（chmod 600）"
 # TURN 时效凭证共享密钥：与 coturn 的 --static-auth-secret 同一把，存
 # /etc/makuris/turn.env 持久复用（每次重新生成会把在途会话的凭证全打废）。
 # 没配过就现场生成一把 48 hex；信令与 turnserver 两个服务都从这里取。

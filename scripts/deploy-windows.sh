@@ -260,6 +260,41 @@ ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_TARGET" \
   "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\user\sync-runbat.ps1 -Url \"$SIGNALING_URL\" -BatPath \"$RUN_BAT\"" \
   | tr -d '\r'
 
+# ---------- 4.6 确保防火墙放行局域网入站 ----------
+# 这一步是必须的，不是可选优化。踩过一次的现场：公网 TURN 中继一切正常、
+# iPhone 能出画，唯独局域网直连必然超时，本机 8444 明明在 LISTENING。
+#
+# 根因（2026-10-12 用 netsh wfp show filters 导出内核过滤器表定案）：
+#   host 首次监听时，防火墙弹窗若被点了「取消」，系统会为该 exe 静默写入
+#   两条永久 Block 规则（名字形如 "TCP Query User{...}...\makuris-host.exe"，
+#   Profile=Public）。而 Windows 防火墙按 WFP 权重裁决，Block(w=10) 永远压过
+#   Allow(w=9)——所以只加 Allow 规则是无效的，必须先把 Block 删掉。
+#   另外若本机 PrivateProfile 注册表键缺失，网络虽显示 Private 也仍按 Public
+#   档「默认阻止入站」执行，于是除 22 外所有入站（含 ICMP）都不通。
+#
+# ensure-firewall.ps1 幂等完成三件事：删掉绑定本 exe 的入站 Block、清理历史
+# 重复的 Allow 变体、确保恰好留下 TCP 8444 + UDP(ICE 媒体) 两条 Profile=Any
+# Allow，并回读核验 block_left=0。只针对 makuris-host.exe，不动整机防火墙开关。
+#
+# 远端 exe 路径与 REMOTE_DIR 一致（正斜杠形式即可，PowerShell 两种都认）。
+say "确保防火墙放行局域网入站（删 Block + 建 Allow，幂等）"
+scp -q -o BatchMode=yes -o ConnectTimeout=10 "$REPO_ROOT/scripts/windows/ensure-firewall.ps1" \
+  "$SSH_TARGET:C:/Users/user/ensure-firewall.ps1" >/dev/null
+# 用 -File 加位置参数（-Command 拼接在 cmd 引号下易被截断，实测踩过）。
+# 必须把远端 exe 的确切路径作为第一个参数传入：Allow 规则按程序路径限定，
+# REMOTE_DIR 是本脚本唯一的事实来源。靠 ps1 里的默认值兜底的话，一旦改了
+# 部署目录，规则就会指向不存在的旧路径 —— 局域网照样连不上且毫无报错。
+# 该脚本以非零码表示「仍有 Block 残留」，这里不让它中断整个部署，
+# 只把结果显式打出来——被控端在公网仍可用，局域网不可用是可接受的降级。
+if ssh -o BatchMode=yes -o ConnectTimeout=25 "$SSH_TARGET" \
+    "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\user\ensure-firewall.ps1 \"$REMOTE_DIR/$BIN_NAME.exe\"" \
+    | tr -d '\r'; then
+  echo "  ✅ 防火墙已放行（局域网直连可用）"
+else
+  echo "  ⚠ 防火墙规则未完全就绪：局域网直连可能仍超时（公网中继不受影响）。"
+  echo "    手工排查：Get-NetFirewallRule -DisplayName '*makuris*' 应无 Block 项。"
+fi
+
 # ---------- 5. 启动计划任务 ----------
 say "启动计划任务 $TASK_NAME"
 ssh -o BatchMode=yes -o ConnectTimeout=15 "$SSH_TARGET" \

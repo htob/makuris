@@ -116,6 +116,23 @@ class SignalingClient: NSObject, ObservableObject {
     /// 信令服务器的接入密钥（服务器未启用鉴权时为空）。
     var accessKey: String = ""
 
+    /// 心跳间隔。
+    ///
+    /// 原来取 25 秒：那时心跳只是为了「别让中间的 NAT 把空闲连接掐掉」，没人
+    /// 看它回没回。现在它同时是活性判据，25 秒太慢——最坏要一分钟才判出「这条
+    /// 连接已经死了」，用户得盯着假就绪干等。压到 10 秒，最迟二十几秒给结论。
+    private static let heartbeatInterval: TimeInterval = 10
+
+    /// 容忍几次心跳没有回音。取 2：一次可能是网络抖动或服务器忙，连着两次
+    /// 就该重建了。
+    private static let heartbeatMissLimit = 2
+
+    /// 最近一次收到服务器消息的时刻（任何消息都算，不只是 pong）。
+    private var lastInboundAt = Date()
+
+    /// 连续多少次心跳没等到任何回音。收到消息或被判死时归零。
+    private var missedHeartbeats = 0
+
     /// 计算注册证明：HMAC-SHA256(接入密钥, "register|" + device_id) 的小写十六进制。
     ///
     /// 必须与 Rust 侧 `makuris_proto::access::register_proof` 逐字一致——
@@ -151,6 +168,10 @@ class SignalingClient: NSObject, ObservableObject {
 
         DispatchQueue.main.async {
             self.state = .connecting
+            // 新连接从零开始计心跳。不重置的话，上一条连接攒下的「没回音」
+            // 次数会立刻把刚建好的这条判死，陷入反复重连。
+            self.missedHeartbeats = 0
+            self.lastInboundAt = Date()
             // 必须清空上一轮的设备列表。
             //
             // 不清的话会出现一类极难自查的「点了没反应」：第二次点同一个地址时，
@@ -171,9 +192,26 @@ class SignalingClient: NSObject, ObservableObject {
             role: role,
             key_proof: registerKeyProof(for: deviceId)))
 
-        // 心跳
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 25, repeats: true) { [weak self] _ in
-            self?.send(.ping)
+        // 心跳：发出去必须收回音。
+        //
+        // 光看 state 会被骗。切网（Wi-Fi ↔ 蜂窝）之后这条 WebSocket 会进入半开：
+        // TCP 不报错、失败回调也迟迟不来，state 一直停在「已就绪」，可消息已经
+        // 发不出去也收不回来了。用户看到的就是「明明显示已就绪，但点谁都没反应，
+        // 下拉刷新也没用，只能重启 App」。
+        //
+        // 所以改成以「有没有回音」为准：连续两次心跳都没等到任何消息（服务器
+        // 收到 ping 必回 pong，见 signaling-server/src/main.rs:263），就判定这条
+        // 连接已经死了，直接重建。
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: Self.heartbeatInterval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if self.missedHeartbeats >= Self.heartbeatMissLimit {
+                print("[signaling] 心跳连续 \(self.missedHeartbeats) 次无回音，判定连接已断，开始重连")
+                self.missedHeartbeats = 0
+                self.forceReconnect()
+                return
+            }
+            self.missedHeartbeats += 1
+            self.send(.ping)
         }
     }
 
@@ -217,8 +255,39 @@ class SignalingClient: NSObject, ObservableObject {
     func hasLiveConnection(to url: String) -> Bool {
         guard lastURL == url else { return false }
         switch state {
-        case .connected, .connecting: return true
+        // 已就绪还得心跳有回音才算「活着」。切网之后半开 socket 的状态同样是
+        // 已就绪，这里若照旧认它，界面就会去复用这条死连接——用户点完电脑
+        // 毫无反应，而原因恰恰藏在「它以为自己还连着」里。
+        case .connected: return isHealthy
+        case .connecting: return true
         case .disconnected, .failed: return false
+        }
+    }
+
+    /// 当前这条连接是否走公网服务器（而非局域网直连地址）。
+    ///
+    /// 用途是判断要不要下发 IPv6 候选：公网会话的中继出口是 IPv4，被控端拿 IPv6
+    /// 候选去申请 TURN 转发许可会被服务端直接拒（443 Peer Address Family Mismatch），
+    /// 而它收到该错误会把该 peer 的 perm 条目一并删掉，连 IPv4 的权限也建不上，
+    /// 中继遂成死锁。局域网直连不经 relay，不受影响，故这里只标出「公网」这一种，
+    /// 内网纯 IPv6 的用法不会被牵连。
+    var isCloudRelay: Bool {
+        guard let lastURL else { return false }
+        // 用户手填的地址可能不带 scheme，补一个再解析。
+        let host = URL(string: lastURL)?.host
+            ?? URL(string: "ws://\(lastURL)")?.host
+            ?? ""
+        guard !host.isEmpty else { return false }
+        if host == "localhost" || host.hasSuffix(".local") { return false }
+        let octets = host.split(separator: ".").compactMap { Int($0) }
+        guard octets.count == 4 else { return true } // 域名或公网 IP：按公网处理
+        switch (octets[0], octets[1]) {
+        case (127, _), (10, _), (192, 168), (169, 254):
+            return false
+        case (172, let second) where (16...31).contains(second):
+            return false
+        default:
+            return true
         }
     }
 
@@ -232,6 +301,32 @@ class SignalingClient: NSObject, ObservableObject {
         if state.isConnected { return false }
         if case .connecting = state { return false }
         print("[signaling] 已断开，重连 \(url)")
+        connect(url: url, deviceId: deviceId, role: role)
+        return true
+    }
+
+    /// 这条连接是否可信。
+    ///
+    /// state 说「已就绪」不算数，还得心跳一直有回音。切网（Wi-Fi ↔ 蜂窝）之后
+    /// socket 会进入半开：TCP 不报错、失败回调迟迟不来，state 就一直是「已就绪」。
+    /// 界面据此决定下拉刷新时是该「要一份新列表」还是该「把这条连接拆掉重建」——
+    /// 对一条半开的连接发消息，等于对着空气说话，用户下拉十次也不会有回应。
+    var isHealthy: Bool {
+        guard state.isConnected else { return false }
+        // 心跳 10 秒一次、连丢两次就重建，健康的连接不会是「三十秒没有任何消息」；
+        // 到这个份上基本就是已经死了，只是还没被发现。
+        return Date().timeIntervalSince(lastInboundAt) < Self.heartbeatInterval * 3
+    }
+
+    /// 不管当前状态怎么显示，都把这条连接拆掉重建。
+    ///
+    /// 与 reconnectIfNeeded 的区别就在「不信任 state」：半开连接的 state 恰恰是
+    /// 「已就绪」，reconnectIfNeeded 的「已就绪就别动」会把重连正好挡在门外。
+    /// 所以只有拿到外部证据时才用它——系统报告网络路径变了，或心跳判定没回音。
+    @discardableResult
+    func forceReconnect() -> Bool {
+        guard let url = lastURL, let role = lastRole else { return false }
+        print("[signaling] 重建连接 \(url)")
         connect(url: url, deviceId: deviceId, role: role)
         return true
     }
@@ -353,6 +448,11 @@ class SignalingClient: NSObject, ObservableObject {
     }
 
     private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+        // 收到任何消息都算「这条连接还活着」，不只是 pong：心跳的活性判据靠它。
+        // 放在最前面，免得后面某个分支 return 掉就把这次回音漏掉了。
+        lastInboundAt = Date()
+        missedHeartbeats = 0
+
         let data: Data
         switch message {
         case .string(let text): data = Data(text.utf8)

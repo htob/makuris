@@ -1,11 +1,13 @@
 # Makuris
 
+**English** | [简体中文](README.zh-CN.md)
+
 <img src="brand/logo-1024.png" alt="Makuris" width="120" />
 
-**用手机远程控制家里的电脑。** 开源、自托管、跨平台。
+**Control the computer at home from your phone.** Open source, self-hosted, cross-platform.
 
-Makuris 是一套远程桌面方案：被控端（Host）跑在你要控制的电脑上，控制端（Viewer）是 iOS App。
-画面与输入经 WebRTC 在两端之间直连或中继传输，信令服务器只负责牵线，不参与数据传输。
+Makuris is a remote desktop solution: the host runs on the computer you want to control, and the viewer is an iOS app.
+Video and input travel between the two ends over WebRTC, directly or through a relay; the signaling server only introduces them and never touches the data.
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 ![Host: macOS / Windows](https://img.shields.io/badge/host-macOS%20%7C%20Windows-lightgrey)
@@ -13,271 +15,273 @@ Makuris 是一套远程桌面方案：被控端（Host）跑在你要控制的�
 
 ---
 
-## 特性
+## Features
 
-- **局域网零配置**：被控端通过 Bonjour 广播 `_makuris._tcp`，手机在同一 Wi-Fi 下打开 App 即自动列出电脑，
-  不需要输入任何地址，也不依赖中央服务器。
-- **跨网络可用**：不在同一网络时，经信令服务器协商、由 coturn（STUN/TURN）助攻建立 WebRTC 连接，4G 下也能出画。
-- **媒体端到端加密**：WebRTC 的 DTLS-SRTP，信令服务器既看不到画面也看不到输入。
-- **硬件编码**：macOS 走 VideoToolbox 硬编，并按 2× 物理分辨率采集，文字清晰不糊。
-- **完整输入回控**：鼠标移动 / 左右键 / 滚轮 / 拖拽，以及键盘文本输入；
-  Windows 侧额外处理多显示器虚拟桌面坐标与组合键修饰状态。
-- **多通道切换**：把「局域网」自动扫描与每条已保存地址各作为一条通道，通道下挂各自的电脑；
-  网络切换后自动重连，不必重启 App。
+- **Zero configuration on the local network**: the host advertises `_makuris._tcp` over Bonjour, so opening the app on the same Wi-Fi lists the computer automatically,
+  with no address to type and no central server involved.
+- **Works across networks**: when the two ends are not on the same network, they negotiate through the signaling server and build a WebRTC connection with help from coturn (STUN/TURN); it gets video through even on 4G.
+- **End-to-end encrypted media**: WebRTC's DTLS-SRTP; the signaling server sees neither the screen nor the input.
+- **Hardware encoding**: macOS encodes with VideoToolbox and captures at 2× the physical resolution, so text stays sharp.
+- **Full input control**: mouse move / left and right buttons / scroll wheel / drag, plus keyboard text input;
+  on Windows it also handles multi-monitor virtual desktop coordinates and modifier-key state.
+- **Multiple channels**: the auto-scanned "Local Network" and every saved address are each a channel, and each channel carries its own computers;
+  after a network change the app reconnects by itself, with no need to restart.
 
-## 平台支持现状
+## Platform support
 
-| 组件 | 平台 | 状态 | 说明 |
+| Component | Platform | Status | Notes |
 | --- | --- | --- | --- |
-| 被控端 Host | macOS | ✅ 可用 | CGWindowList 采集、CGEvent 注入、VideoToolbox 硬编、系统 Bonjour |
-| 被控端 Host | Windows | ✅ 可用 | GDI BitBlt 采集（声明 DPI 感知）、SendInput 注入、openh264 编码、mdns-sd 广播 |
-| 被控端 Host | Linux | ⬜ 未实现 | 规划中 |
-| 控制端 Viewer | iOS | ✅ 可用 | Swift + WebRTC，Bonjour 自动发现 + 手动保存地址 |
-| 控制端 Viewer | Android | ⬜ 未实现 | 规划中 |
-| 信令服务器 | 跨平台 | ✅ 可用 | Rust axum + WebSocket，可 Docker 部署 |
-| TURN 中继 | Linux | ✅ 可用 | coturn，`use-auth-secret` 时效凭证 |
+| Host | macOS | ✅ Available | CGWindowList capture, CGEvent injection, VideoToolbox hardware encoding, system Bonjour |
+| Host | Windows | ✅ Available | GDI BitBlt capture (declared DPI aware), SendInput injection, openh264 encoding, mdns-sd advertisement |
+| Host | Linux | ⬜ Not implemented | Planned |
+| Viewer | iOS | ✅ Available | Swift + WebRTC, Bonjour auto-discovery plus manually saved addresses |
+| Viewer | Android | ⬜ Not implemented | Planned |
+| Signaling server | Cross-platform | ✅ Available | Rust axum + WebSocket, deployable with Docker |
+| TURN relay | Linux | ✅ Available | coturn, `use-auth-secret` time-limited credentials |
 
-## 工作原理
+## How it works
 
 ```
-                    ┌──────────────────────────────────┐
-                    │           信令服务器              │
-                    │   Rust axum, wss://<host>:8443   │
-                    │  设备注册 / 信令转发 / TURN 凭证签发 │
-                    └───────────┬──────────────────────┘
-                                │ 信令：SDP / ICE / 配对
-                 ┌──────────────┴──────────────┐
-                 │                             │
-      ┌──────────▼───────────┐     ┌───────────▼──────────┐
-      │     被控端 Host       │◄───►│   控制端 Viewer       │
-      │    macOS / Windows   │     │      iOS App         │
-      │  采集 → 编码 → 推流    │WebRTC│  收流 → 渲染 + 输入回传 │
-      └──────────────────────┘     └──────────────────────┘
+                    ┌──────────────────────────────────────────┐
+                    │             Signaling server             │
+                    │      Rust axum, wss://<host>:8443        │
+                    │   device registry / relay / TURN creds   │
+                    └──────────────┬───────────────────────────┘
+                                   │ signaling: SDP / ICE / pairing
+                 ┌─────────────────┴──────────┐
+                 │                            │
+      ┌──────────▼───────────┐      ┌───────────▼──────────┐
+      │         Host         │◄────►│        Viewer        │
+      │    macOS / Windows   │      │       iOS app        │
+      │   capture, encode,   │WebRTC│  receive, render,    │
+      │   stream out         │      │  send input back     │
+      └──────────────────────┘      └──────────────────────┘
                  │
-                 │ 同一局域网时：Bonjour 广播 + 8444 内置直连信令
-                 └──────────── 无需中心服务器 ────────────┘
+                 │ Same LAN: Bonjour advertisement + built-in
+                 │ direct signaling on 8444 — no central server
+                 └──────────────────────────────────────────┘
 ```
 
-两条路径：
+Two paths:
 
-1. **局域网**：Bonjour 发现 → 8444 端口内置信令直连 → 本地 WebRTC 直连（流量不过任何服务器）。
-2. **跨网络**：连 wss 信令服务器 → ICE 打洞，打不通则回落到 coturn 中继。
+1. **Local network**: Bonjour discovery → built-in signaling directly on port 8444 → local WebRTC connection (traffic passes through no server).
+2. **Across networks**: connect to the wss signaling server → ICE hole punching, falling back to the coturn relay when it fails.
 
-## 仓库结构
+## Repository layout
 
 ```
 makuris/
-├── proto/                 # 共享协议：信令消息、输入事件、配对（Rust）
-├── host/                  # 被控端（Rust）
-│   ├── src/capture/       # 屏幕采集（macOS surface / Windows GDI）
-│   ├── src/encode/        # 视频编码（VideoToolbox 硬编 / openh264）
-│   ├── src/input/         # 输入注入（CGEvent / SendInput）
-│   ├── src/lan.rs         # 局域网直连信令 + Bonjour 广播
-│   ├── src/bonjour.rs     # 系统 Bonjour FFI（仅 macOS）
-│   ├── src/pairing.rs     # 配对与信任令牌
-│   ├── src/tls_pin.rs     # 信令 wss 证书指纹固定
-│   └── src/turn.rs        # TURN 中继客户端
-├── signaling-server/      # 信令服务器（Rust axum + WebSocket + TLS）
-├── ios-client/            # iOS 控制端（Swift + WebRTC）
-├── deploy/                # Docker Compose（信令 + coturn）与 systemd 单元
-├── packaging/             # macOS .app 打包（含菜单栏助手）
-├── scripts/               # 部署与诊断脚本（cloud / windows / e2e）
-├── brand/                 # Logo 母版
-└── docs/                  # 文档（含开源前安全审计报告）
+├── proto/                 # Shared protocol: signaling messages, input events, pairing (Rust)
+├── host/                  # Host (Rust)
+│   ├── src/capture/       # Screen capture (macOS surface / Windows GDI)
+│   ├── src/encode/        # Video encoding (VideoToolbox hardware / openh264)
+│   ├── src/input/         # Input injection (CGEvent / SendInput)
+│   ├── src/lan.rs         # Local-network direct signaling + Bonjour advertisement
+│   ├── src/bonjour.rs     # System Bonjour FFI (macOS only)
+│   ├── src/pairing.rs     # Pairing and trust tokens
+│   ├── src/tls_pin.rs     # Certificate pinning for the signaling wss
+│   └── src/turn.rs        # TURN relay client
+├── signaling-server/      # Signaling server (Rust axum + WebSocket + TLS)
+├── ios-client/            # iOS viewer (Swift + WebRTC)
+├── deploy/                # Docker Compose (signaling + coturn) and systemd units
+├── packaging/             # macOS .app packaging (includes the menu bar helper)
+├── scripts/               # Deployment and diagnostic scripts (cloud / windows / e2e)
+├── brand/                 # Logo master files
+└── docs/                  # Documentation (includes the pre-open-source security audit)
 ```
 
-## 快速开始
+## Getting started
 
-### 前置条件
+### Prerequisites
 
-- Rust stable 工具链（edition 2021）
-- macOS 被控端需要 Xcode Command Line Tools
-- iOS 控制端需要完整 Xcode 16+ 与真机，详见 [ios-client/SETUP.md](ios-client/SETUP.md)
+- Rust stable toolchain (edition 2021)
+- Xcode Command Line Tools for the macOS host
+- Full Xcode 16+ and a physical device for the iOS viewer; see [ios-client/SETUP.md](ios-client/SETUP.md)
 
-### 1. 启动被控端
+### 1. Start the host
 
 ```bash
 cargo run -p makuris-host
 ```
 
-首次运行需在系统设置里授权：
+Grant permissions on first run:
 
-- **macOS**：屏幕录制 + 辅助功能（系统设置 → 隐私与安全性）
-- **Windows**：如需控制以管理员权限运行的窗口，被控端本身也要以管理员身份运行
+- **macOS**: Screen Recording + Accessibility (System Settings → Privacy & Security)
+- **Windows**: to control windows that run with administrator privileges, the host itself must also run as administrator
 
-### 2. 局域网连接（零配置）
+### 2. Local network connection (zero configuration)
 
-手机与电脑连同一 Wi-Fi，打开 App，首页「局域网」通道会自动列出这台电脑，点击即进入画面。
+Put the phone and the computer on the same Wi-Fi and open the app; the "Local Network" channel on the home screen lists the computer automatically, and tapping it opens the screen.
 
-### 3. 跨网络连接
+### 3. Cross-network connection
 
-启动信令服务器：
+Start the signaling server:
 
 ```bash
 cargo run -p makuris-signaling
-# 默认监听 ws://0.0.0.0:8443/ws
+# listens on ws://0.0.0.0:8443/ws by default
 ```
 
-让被控端连上信令（两端必须用同一把接入密钥）：
+Point the host at it (both ends must use the same access key):
 
 ```bash
 MAKURIS_SIGNALING=wss://your-server:8443/ws \
-MAKURIS_ACCESS_KEY=<与信令端一致> \
+MAKURIS_ACCESS_KEY=<same as the signaling side> \
 cargo run -p makuris-host
 ```
 
-或用 Docker Compose 一次拉起信令与 coturn：
+Or bring up signaling and coturn together with Docker Compose:
 
 ```bash
 cd deploy && docker compose up -d
-# 上线前务必修改 coturn 的 TURN 密钥并配置 TLS
+# change coturn's TURN secret and configure TLS before going live
 ```
 
-### 4. 构建 iOS 控制端
+### 4. Build the iOS viewer
 
 ```bash
 open ios-client/Makuris.xcodeproj
 ```
 
-Bonjour 权限声明等关键配置见 [ios-client/SETUP.md](ios-client/SETUP.md)。
+Key settings such as the Bonjour permission declaration are in [ios-client/SETUP.md](ios-client/SETUP.md).
 
-### 5. 跑测试
+### 5. Run the tests
 
 ```bash
 cargo test -p makuris-proto
 ```
 
-## 配置项
+## Configuration
 
-### 被控端（host）
+### Host
 
-| 环境变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `MAKURIS_DEVICE_ID` | `host-mac-01` / `host-win-01` / `host-linux-01` | 设备标识，信令路由键 |
-| `MAKURIS_SIGNALING` | 空 | 信令地址（如 `wss://host:8443/ws`）；不填则只走局域网 |
-| `MAKURIS_ACCESS_KEY` | 空 | 接入密钥，须与信令服务器一致 |
-| `MAKURIS_PAIRING_CODE` | 随机生成 | 固定配对码；默认随机生成并写入状态目录 |
-| `MAKURIS_LAN_PORT` | `8444` | 局域网直连信令端口 |
-| `MAKURIS_UDP_PORT` | 自动 | WebRTC 直连 UDP 端口 |
-| `MAKURIS_STUN` | 内置公共 STUN | 覆盖 STUN 服务器地址 |
-| `MAKURIS_STATE_DIR` | 平台惯例 | 状态目录（配对码、信任令牌） |
-| `MAKURIS_LOG_DIR` | macOS `~/Library/Logs/Makuris`；Windows `%LOCALAPPDATA%\Makuris\logs` | 日志目录 |
+| `MAKURIS_DEVICE_ID` | `host-mac-01` / `host-win-01` / `host-linux-01` | Device identifier, the routing key for signaling |
+| `MAKURIS_SIGNALING` | empty | Signaling address (e.g. `wss://host:8443/ws`); when empty the host serves the local network only |
+| `MAKURIS_ACCESS_KEY` | empty | Access key; must match the signaling server |
+| `MAKURIS_PAIRING_CODE` | randomly generated | A fixed pairing code; by default one is generated and written to the state directory |
+| `MAKURIS_LAN_PORT` | `8444` | Port for the built-in local-network signaling |
+| `MAKURIS_UDP_PORT` | automatic | UDP port for the direct WebRTC connection |
+| `MAKURIS_STUN` | built-in public STUN | Overrides the STUN server address |
+| `MAKURIS_STATE_DIR` | platform convention | State directory (pairing code, trust tokens) |
+| `MAKURIS_LOG_DIR` | macOS `~/Library/Logs/Makuris`; Windows `%LOCALAPPDATA%\Makuris\logs` | Log directory |
 
-### 信令服务器
+### Signaling server
 
-| 环境变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `PORT` | `8443` | 监听端口 |
-| `MAKURIS_ACCESS_KEY` | 自动生成并落盘 | 接入密钥；设备需填同一串 |
-| `MAKURIS_NO_ACCESS_KEY` | 空 | 设了就关闭接入鉴权 ⚠️ 仅建议纯局域网自用 |
-| `MAKURIS_TLS_CERT` / `MAKURIS_TLS_KEY` | `/etc/makuris/tls/cert.pem` / `key.pem` | 证书与私钥；缺失则回落明文 `ws`（公网不建议） |
-| `MAKURIS_TURN_SECRET` | 空 | coturn 共享密钥；不配则不下发 TURN 凭证 |
-| `MAKURIS_TURN_URLS` | 空 | TURN 地址列表（逗号分隔） |
-| `MAKURIS_TURN_REALM` | 空 | TURN realm |
-| `MAKURIS_TURN_TTL` | 见代码默认 | 时效凭证有效期（秒） |
-| `MAKURIS_STATE_DIR` | 平台惯例 | 状态目录 |
+| `PORT` | `8443` | Listening port |
+| `MAKURIS_ACCESS_KEY` | generated and written to disk | Access key; devices must use the same string |
+| `MAKURIS_NO_ACCESS_KEY` | empty | Setting it turns off access authentication ⚠️ recommended only for purely local use |
+| `MAKURIS_TLS_CERT` / `MAKURIS_TLS_KEY` | `/etc/makuris/tls/cert.pem` / `key.pem` | Certificate and private key; without them the server falls back to plaintext `ws` (not advisable on the public internet) |
+| `MAKURIS_TURN_SECRET` | empty | coturn shared secret; without it no TURN credentials are issued |
+| `MAKURIS_TURN_URLS` | empty | TURN address list (comma-separated) |
+| `MAKURIS_TURN_REALM` | empty | TURN realm |
+| `MAKURIS_TURN_TTL` | see the code default | Lifetime of the time-limited credentials (seconds) |
+| `MAKURIS_STATE_DIR` | platform convention | State directory |
 
-## 安全模型
+## Security model
 
-1. **接入密钥**：设备注册信令须附密钥的 HMAC 证明；未通过者既拿不到设备列表，也不能转发信令。
-2. **配对与信任令牌**：首次连接需在被控端输入配对码（HMAC-SHA256 挑战应答，算法与位数在 `proto` 中统一定义）；
-   配对成功后签发信任令牌，之后免输。
-3. **TLS 指纹固定**：信令用自签证书，客户端不信任任何公共 CA，只认证书的 SHA256 指纹（`host/src/tls_pin.rs`）。
-4. **TURN 时效凭证**：coturn 走 `use-auth-secret`，凭证由信令在设备注册时下发并在到期前续签；
-   **源码零秘密**，即使凭证泄露也会在数小时内自动失效。
-5. **媒体端到端加密**：WebRTC DTLS-SRTP，信令服务器不接触画面与输入。
+1. **Access key**: a device registering with the signaling server must prove knowledge of the key with an HMAC; anyone who fails gets neither the device list nor signaling relaying.
+2. **Pairing and trust tokens**: the first connection requires entering the pairing code on the host (HMAC-SHA256 challenge-response; the algorithm and code length are defined once in `proto`);
+   a successful pairing issues a trust token, so later connections skip the code.
+3. **TLS certificate pinning**: signaling uses a self-signed certificate, and the client trusts no public CA, only the certificate's SHA256 fingerprint (`host/src/tls_pin.rs`).
+4. **Time-limited TURN credentials**: coturn runs with `use-auth-secret`; the signaling server issues credentials when a device registers and renews them before they expire;
+   **no secret is stored in the source**, so even a leaked credential stops working within hours.
+5. **End-to-end encrypted media**: WebRTC DTLS-SRTP; the signaling server never touches the screen or the input.
 
-> 开源前的凭证硬编码与个人信息排查记录见 [docs/OPEN_SOURCE_AUDIT.md](docs/OPEN_SOURCE_AUDIT.md)。
+> The pre-open-source sweep for hard-coded credentials and personal information is documented in [docs/OPEN_SOURCE_AUDIT.md](docs/OPEN_SOURCE_AUDIT.md).
 
-## 构建与打包
+## Building and packaging
 
-### macOS .app（推荐）
+### macOS .app (recommended)
 
 ```bash
 ./packaging/build_app.sh release
-# 产物：dist/Makuris.app（内含菜单栏助手）
+# output: dist/Makuris.app (includes the menu bar helper)
 ```
 
-直接跑 `cargo run` 的裸二进制每次重编译都会丢掉「屏幕录制 / 辅助功能」授权，打成 .app 后可稳定授权。
+A bare binary run with `cargo run` loses its Screen Recording / Accessibility grants on every rebuild; packaged as an .app it keeps them.
 
-### Windows 交叉编译（在 macOS 上产出 .exe）
+### Windows cross-compilation (produce an .exe on macOS)
 
 ```bash
 brew install mingw-w64
 rustup target add x86_64-pc-windows-gnu
 cargo build --release --target x86_64-pc-windows-gnu -p makuris-host
-# 产物：target/x86_64-pc-windows-gnu/release/makuris-host.exe
+# output: target/x86_64-pc-windows-gnu/release/makuris-host.exe
 ```
 
-### 信令服务器
+### Signaling server
 
 ```bash
 cargo build --release -p makuris-signaling
 ```
 
-云端部署脚本：`scripts/deploy-signaling.sh`（云端原生编译 + systemd）。
+Cloud deployment script: `scripts/deploy-signaling.sh` (native build on the server + systemd).
 
-## 测试与诊断
+## Testing and diagnostics
 
 ```bash
-cargo test -p makuris-proto                                 # 协议单测
-cargo check -p makuris-host --features windows_typecheck    # 在非 Windows 上类型检查 Windows 代码
+cargo test -p makuris-proto                                 # protocol unit tests
+cargo check -p makuris-host --features windows_typecheck    # type-check the Windows code on a non-Windows host
 ```
 
-`scripts/` 下另有端到端与诊断脚本：
+`scripts/` also holds end-to-end and diagnostic scripts:
 
-- `lan_admission_e2e.mjs` — 局域网准入回归
-- `switch_path_e2e.mjs` — 切换连接线路回归
-- `turn_renew_e2e.mjs` — TURN 凭证续签
-- `security_e2e.mjs` — 安全回归
-- `scripts/windows/diag-*.ps1` — Windows 侧诊断（mDNS 广播、端口占用、防火墙、进程状态）
+- `lan_admission_e2e.mjs` — local-network admission regression
+- `switch_path_e2e.mjs` — connection-path switching regression
+- `turn_renew_e2e.mjs` — TURN credential renewal
+- `security_e2e.mjs` — security regression
+- `scripts/windows/diag-*.ps1` — Windows-side diagnostics (mDNS advertisement, port usage, firewall, process state)
 
-## 已知限制
+## Known limitations
 
-- **Linux 被控端未实现**。
-- **Windows 采集走 GDI BitBlt**：DirectX / 独占全屏应用可能采到黑屏，后续按需升级 DXGI。
-- **Windows 输入注入受 UIPI 限制**：普通权限进程无法向以管理员权限运行的窗口注入输入。
-- **被控端全局单会话**：同一台被控端同时只服务一个控制端。
-- **控制端目前只有 iOS**，Android 未实现。
-- **公网跨 NAT 需自建 coturn**；未配 TURN 时只剩直连候选。
+- **The Linux host is not implemented.**
+- **On Windows, capture goes through GDI BitBlt**: DirectX / exclusive-fullscreen applications may come out black; moving to DXGI is planned as needed.
+- **On Windows, input injection is subject to UIPI**: a process without elevation cannot inject input into a window running with administrator privileges.
+- **The host serves a single session globally**: one host serves one viewer at a time.
+- **The viewer exists only for iOS**; Android is not implemented.
+- **Crossing NAT on the public internet needs your own coturn**; without TURN only direct candidates remain.
 
-## 路线图
+## Roadmap
 
-- [x] macOS 被控端
-- [x] Windows 被控端
-- [x] iOS 控制端 + 局域网零配置
-- [x] 公网信令 + TURN 中继
-- [ ] Linux 被控端
-- [ ] Android 控制端
-- [ ] Windows DXGI 采集（独占全屏）
+- [x] macOS host
+- [x] Windows host
+- [x] iOS viewer + zero-configuration local network
+- [x] Public-internet signaling + TURN relay
+- [ ] Linux host
+- [ ] Android viewer
+- [ ] Windows DXGI capture (exclusive fullscreen)
 
-## 贡献
+## Contributing
 
-欢迎提 issue 与 PR。提交前请确保以下检查通过：
+Issues and pull requests are welcome. Before submitting, make sure these checks pass:
 
 ```bash
 cargo test -p makuris-proto
 cargo check -p makuris-host
-cargo check --target x86_64-pc-windows-gnu -p makuris-host   # 改动 host 时
+cargo check --target x86_64-pc-windows-gnu -p makuris-host   # when you touch the host
 cargo check -p makuris-signaling
 ```
 
-提交信息请使用英文，并按 `feat:` / `fix:` / `docs:` / `chore:` 前缀分类。
+Use English commit messages, prefixed with `feat:` / `fix:` / `docs:` / `chore:`.
 
 ## License
 
-[Apache License 2.0](LICENSE)。
+[Apache License 2.0](LICENSE).
 
-## 致谢
+## Acknowledgements
 
-本项目建立在以下开源工作之上：
+This project builds on the following open-source work:
 
-- [tokio](https://tokio.rs/)、[axum](https://github.com/tokio-rs/axum)、[serde](https://serde.rs/)、[tracing](https://github.com/tokio-rs/tracing)
-- [webrtc-rs](https://github.com/webrtc-rs/webrtc)（`rtc` / `rtc-turn`）
-- [OpenH264](https://github.com/cisco/openh264)（Cisco，软件编码）
-- [rustls](https://github.com/rustls/rustls)（ISC/Apache-2.0）、[tokio-tungstenite](https://github.com/snapview/tokio-tungstenite)
+- [tokio](https://tokio.rs/), [axum](https://github.com/tokio-rs/axum), [serde](https://serde.rs/), [tracing](https://github.com/tokio-rs/tracing)
+- [webrtc-rs](https://github.com/webrtc-rs/webrtc) (`rtc` / `rtc-turn`)
+- [OpenH264](https://github.com/cisco/openh264) (Cisco, software encoding)
+- [rustls](https://github.com/rustls/rustls) (ISC/Apache-2.0), [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite)
 - [mdns-sd](https://github.com/keepsimple1/mdns-sd)
-- [stasel/WebRTC](https://github.com/stasel/WebRTC)（iOS 预编译框架，BSD-3-Clause）
-- [coturn](https://github.com/coturn/coturn)（BSD-3-Clause）
+- [stasel/WebRTC](https://github.com/stasel/WebRTC) (prebuilt framework for iOS, BSD-3-Clause)
+- [coturn](https://github.com/coturn/coturn) (BSD-3-Clause)
 
-各依赖的版权与许可证以其自身仓库为准。
+Each dependency's copyright and license terms are governed by its own repository.

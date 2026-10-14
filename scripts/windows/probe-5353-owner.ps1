@@ -43,10 +43,13 @@ $lines += ('  REUSEADDR=true   -> ' + (Try-Bind5353 $true))
 $lines += ('  REUSEADDR=false  -> ' + (Try-Bind5353 $false))
 
 $lines += ''
-$lines += '=== C. makuris-host(25888) 当前持有的 5353 端点 ==='
-Get-NetUDPEndpoint -OwningProcess 25888 -ErrorAction SilentlyContinue | ForEach-Object {
-  $lines += ('  {0}:{1}' -f $_.LocalAddress, $_.LocalPort)
-}
+$lines += '=== C. makuris-host 当前持有的 5353 端点 ==='
+$hp = (Get-Process makuris-host -ErrorAction SilentlyContinue | Select-Object -First 1).Id
+if ($hp) {
+  Get-NetUDPEndpoint -OwningProcess $hp -ErrorAction SilentlyContinue | ForEach-Object {
+    $lines += ('  {0}:{1}' -f $_.LocalAddress, $_.LocalPort)
+  }
+} else { $lines += '  (makuris-host 未运行)' }
 
 $lines += ''
 $lines += '=== D. WLAN 接口的 IPv4 广播地址（自研广播发现要用）==='
@@ -54,10 +57,10 @@ Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias 'WLAN' -ErrorAction Silentl
   $lines += ('  {0} prefixlen={1}' -f $_.IPAddress, $_.PrefixLength)
 }
 Get-NetRoute -InterfaceAlias 'WLAN' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Where-Object { $_.DestinationPrefix -eq '192.168.1.0/24' } | ForEach-Object {
+  Where-Object { $_.DestinationPrefix -like '192.168.*' } | ForEach-Object {
     $lines += ('  路由 {0} via {1}' -f $_.DestinationPrefix, $_.NextHop)
   }
 
 $lines += 'DONE'
-$lines | Out-File -FilePath 'C:\Users\user\makuris\probe-5353.txt' -Encoding UTF8
+$lines | Out-File -FilePath "$env:USERPROFILE\makuris\probe-5353.txt" -Encoding UTF8
 $lines | ForEach-Object { $_ }

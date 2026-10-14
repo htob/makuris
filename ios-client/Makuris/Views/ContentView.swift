@@ -754,7 +754,7 @@ struct AddComputerView: View {
                     TextField(l10n.t(.namePlaceholder), text: $name)
                 }
                 Section {
-                    TextField("192.168.1.3", text: $address)
+                    TextField("192.168.1.100", text: $address)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)

@@ -24,7 +24,7 @@ $ErrorActionPreference = "SilentlyContinue"
 # arg[0] = full path of the deployed exe (pass it from deploy-windows.sh).
 # Default matches the standard layout used by makuris-run.bat.
 $exe = $args[0]
-if (-not $exe) { $exe = "C:\Users\user\makuris\target\release\makuris-host.exe" }
+if (-not $exe) { $exe = "$env:USERPROFILE\makuris\target\release\makuris-host.exe" }
 $exeExists = Test-Path $exe
 "EXE $exe exists=$exeExists"
 

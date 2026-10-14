@@ -5,10 +5,10 @@
 # NOTE: keep this file pure ASCII - it has no BOM, so non-ASCII would be
 # decoded with the system code page by PowerShell.
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
-$out = 'C:/Users/user/makuris/mdns-diag.txt'
+$out = "$env:USERPROFILE/makuris/mdns-diag.txt"
 
 "=== 1. host.log lines about lan / mdns (last 14) ===" | Out-File $out -Encoding UTF8
-Get-Content C:/Users/user/makuris/host.log -Encoding UTF8 |
+Get-Content "$env:USERPROFILE/makuris/host.log" -Encoding UTF8 |
     Select-String -SimpleMatch 'lan]' |
     Select-Object -Last 14 |
     ForEach-Object { $_.Line } |

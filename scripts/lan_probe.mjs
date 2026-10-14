@@ -6,7 +6,9 @@
 // 直连端点，一次性排除掉「端点本身坏了」这一整类原因，不必靠用户在手机上
 // 反复试。它只发 register 与 list_devices，不发起 Connect，因此不会写令牌、
 // 不会改动任何持久状态。
-const URL = process.env.MAKURIS_LAN_URL || 'ws://192.168.1.3:8444/ws';
+//
+// 用法：MAKURIS_LAN_URL=ws://192.168.1.100:8444/ws node scripts/lan_probe.mjs
+const URL = process.env.MAKURIS_LAN_URL || 'ws://192.168.1.100:8444/ws';
 const ID = 'probe-' + Date.now();
 
 console.log(`连接 ${URL}（device_id=${ID}）`);

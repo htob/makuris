@@ -1,6 +1,7 @@
 # Where does the running host get its signaling URL? Check Machine-level env,
 # the scheduled task action, and run.bat content. ASCII-only (see diag-win.ps1 note).
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+$home_ = $env:USERPROFILE
 
 Write-Host '--- Machine-level env vars ---'
 foreach ($k in 'MAKURIS_SIGNALING','MAKURIS_DEVICE_ID','MAKURIS_ACCESS_KEY','MAKURIS_PAIRING_CODE') {
@@ -24,9 +25,9 @@ if ($t) {
 
 Write-Host '--- run.bat candidates ---'
 $paths = @(
-    'C:\Users\user\makuris\run.bat',
-    'C:\Users\user\makuris\target\release\run.bat',
-    'C:\Users\user\makuris\start.bat'
+    "$home_\makuris\run.bat",
+    "$home_\makuris\target\release\run.bat",
+    "$home_\makuris\start.bat"
 )
 foreach ($p in $paths) {
     if (Test-Path $p) {
@@ -35,8 +36,8 @@ foreach ($p in $paths) {
     }
 }
 
-Write-Host '--- search MAKURIS_SIGNALING in all .bat under C:\Users\user\makuris ---'
-Get-ChildItem 'C:\Users\user\makuris' -Recurse -Include '*.bat','*.cmd' -ErrorAction SilentlyContinue |
+Write-Host "--- search MAKURIS_SIGNALING in all .bat under $home_\makuris ---"
+Get-ChildItem "$home_\makuris" -Recurse -Include '*.bat','*.cmd' -ErrorAction SilentlyContinue |
     ForEach-Object {
         $hit = Select-String -Path $_.FullName -Pattern 'MAKURIS_SIGNALING' -SimpleMatch -ErrorAction SilentlyContinue
         if ($hit) { Write-Host ("{0}: {1}" -f $_.FullName, ($hit.Line -join ' | ')) }

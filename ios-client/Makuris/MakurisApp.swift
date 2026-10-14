@@ -101,7 +101,7 @@ final class BackgroundKeepAlive {
 
 /// 全局应用状态
 class AppState: ObservableObject {
-    /// 被控电脑地址。刻意允许只填一个 IP（如 192.168.1.3）：
+    /// 被控电脑地址。刻意允许只填一个 IP（如 192.168.1.100）：
     /// 协议、端口、路径都由 `normalizedURL` 补全——这些是协议细节，
     /// 不该要求用户记住，普通用户只需要知道「家里那台电脑的地址」。
     /// 写入 UserDefaults，下次启动自动带上，不必重填。
@@ -154,15 +154,16 @@ class AppState: ObservableObject {
     }
 
     init() {
-        // 云信令已 TLS 化（wss + 指纹固定），默认地址直接用 wss。
-        // 存量装机在 UserDefaults 里存的是旧的明文 ws://203.0.113.10…，
+        // 云信令走 TLS（wss + 指纹固定），默认地址直接用 wss。
+        // 下面的默认值是占位示例，请到「设置」里改成你自己的信令服务器地址。
+        // 存量装机在 UserDefaults 里存的是旧的明文 ws://（云信令 TLS 化之前），
         // 服务器已不再接受明文连接，不迁移的话升级后用户面对的是
         // 莫名其妙的「连接失败」——这里做一次性前缀迁移。
         let saved = UserDefaults.standard.string(forKey: Self.addressKey)
         if let s = saved, s.hasPrefix("ws://203.0.113.10") {
             serverAddress = "wss" + s.dropFirst(2)
         } else {
-            serverAddress = saved ?? "wss://203.0.113.10:8443/ws"
+            serverAddress = saved ?? "wss://signal.example.com:8443/ws"
         }
         // 带 didSet 的属性不能写默认值（Swift 不允许），必须在 init 里显式赋值，
         // 否则编译器直接报「未初始化所有存储属性」。
@@ -186,16 +187,16 @@ class AppState: ObservableObject {
         //   .local / 无点短名 → 局域网直连，走 ws + 8443
         // 不能一律补 ws://：域名配 8443 恰恰是连不上的组合，而用户看到的只是
         // 「连接失败」，根本联想不到端口头上——这种错误最难自查。
-        // 注意：公网 IP 直连云信令也走 wss（203.0.113.10 即此形态），
+        // 注意：公网 IP 直连云信令也走 wss（下面这个示例 IP 即此形态），
         // 与局域网内网 IP 的区分靠主机名形态，与历史行为一致。
         if !text.contains("://") {
             let bareHost = text.split(separator: ":").first.map(String.init) ?? text
-            // 云信令只服务 wss（自签证书 + 指纹固定），这个 IP 必须特判；
+            // 云信令只服务 wss（自签证书 + 指纹固定），默认服务器这个 IP 必须特判；
             // 其余裸 IPv4 仍按局域网直连补 ws——内网自建 host 没有 TLS。
             text = (Self.looksLikePublicHost(bareHost) || bareHost == "203.0.113.10"
                 ? "wss://" : "ws://") + text
         }
-        // 存量地址语义迁移：云信令（203.0.113.10）已 TLS-only，服务器不再接受
+        // 存量地址语义迁移：云信令已 TLS-only，服务器不再接受
         // 明文，任何指向它的 ws://（无论来自 AppState 设置、已保存电脑列表还是
         // legacy 单地址迁移）都必须改写为 wss，否则用户看到的只是莫名 -1005。
         // 放在 normalize 而不是 AppState.init：init 够不着 SavedComputers 里

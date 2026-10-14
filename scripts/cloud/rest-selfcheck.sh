@@ -20,9 +20,12 @@ CRED=$(printf %s "$USER_" | openssl dgst -sha1 -hmac "$S" -binary | base64)
 echo "username=$USER_ cred_len=${#CRED} (HMAC-SHA1 base64 应为 28)"
 
 # 走内网监听地址：公网 IP 从服务器本机回环不通（此前已实测），与链路无关。
+# 内网地址因云厂商而异，用 MAKURIS_TURN_INTERNAL_IP 覆盖（默认见下），
+# 用 ip addr 查 coturn 实际监听的那张网卡地址即可。
 # -y 必带：不带对端时 uclient 直接退出（"Either -e peer_address or -y must be
 # specified"，此前 restcheck9 空输出即此因）。-y = UDP 自测，仍会完整 Allocate
 # （REST 认证即发生在这一步），随后经 relay 地址回环发数据，不需要真实对端。
+INTERNAL_IP="${MAKURIS_TURN_INTERNAL_IP:-172.19.0.2}"
 echo "--- UDP 3478 自测（-y 自测 + 密码 -W）---"
-timeout 15 turnutils_uclient -y -v -u "$USER_" -W "$CRED" 172.19.0.2 2>&1 \
+timeout 15 turnutils_uclient -y -v -u "$USER_" -W "$CRED" "$INTERNAL_IP" 2>&1 \
   | grep -iE "relay addr|success|ERROR|fail|401|Cannot" | head -8

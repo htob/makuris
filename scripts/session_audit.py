@@ -8,7 +8,7 @@
 蜂窝——两者混在一起统计，结论必然错。
 
 用法：python3 scripts/session_audit.py <去色后的 host.log> \
-        [--wifi 192.168.1.73] [--cell 10.0.0.90]
+        [--wifi 192.168.1.100] [--cell 10.0.0.90]
 """
 import argparse
 import re
@@ -95,7 +95,7 @@ def net_of(cands, wifi, cell):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("log")
-    ap.add_argument("--wifi", default="192.168.1.73")
+    ap.add_argument("--wifi", default="192.168.1.100")
     ap.add_argument("--cell", default="10.0.0.90")
     a = ap.parse_args()
 

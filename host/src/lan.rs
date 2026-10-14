@@ -449,7 +449,7 @@ fn selfcheck_mdns(
         );
         std::thread::sleep(backoff);
         // 重建前必须先撤掉旧实例：不撤的话同一个实例名会在组播上并存，mdns-sd
-        // 探测到名字冲突会把新实例改名，手机列表里就冒出「user (2)」这种重复项
+        // 探测到名字冲突会把新实例改名，手机列表里就冒出「my-pc (2)」这种重复项
         // （2026-10-13 复核发现：原实现直接 forget 旧 daemon，没有撤销这一步）。
         let _ = daemon.shutdown();
         match spawn_mdns_daemon(&device_id, port) {
@@ -485,7 +485,7 @@ fn start_bonjour(device_id: &str, port: u16) -> bool {
             let device_id = device_id.to_string();
             // daemon 的所有权交给自检线程：它负责保活（正常路径 forget），并在重建
             // 时先 shutdown 掉旧实例——否则同名实例会在组播上并存，mdns-sd 检测到
-            // 名字冲突会给新实例改名，手机列表里冒出「user (2)」这种重复项。
+            // 名字冲突会给新实例改名，手机列表里冒出「my-pc (2)」这种重复项。
             std::thread::spawn(move || selfcheck_mdns(daemon, listener, local, device_id, port));
         }
         _ => {

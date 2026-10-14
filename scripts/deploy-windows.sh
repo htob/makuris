@@ -15,22 +15,37 @@
 #
 # 环境变量（都有默认值）：
 #   MAKURIS_HOST_SSH   SSH 目标，默认 user@192.168.1.223
-#   MAKURIS_WIN_DIR    远端部署目录，默认 C:/Users/user/makuris/dist
+#   MAKURIS_WIN_USER   远端 Windows 用户名，默认 user
+#   MAKURIS_WIN_HOME   远端用户目录，默认 C:/Users/<MAKURIS_WIN_USER>
+#   MAKURIS_WIN_DIR    远端部署目录，默认 <WIN_HOME>/makuris/target/release
 #   MAKURIS_TASK       计划任务名，默认 MakurisHost
+#
+# 本机真实值放 scripts/.deploy.env（已被 .gitignore 排除，不进版本库）；
+# 脚本启动时自动加载它，仓库里只保留通用占位值，开源后不泄露个人信息。
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# 加载本地私密配置（不存在则跳过，脚本按内置占位默认值运行）
+if [[ -f "$REPO_ROOT/scripts/.deploy.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/.deploy.env"
+  set +a
+fi
+
 # 远端部署目录必须与计划任务执行的 run.bat 里的路径一致。
 #
-# run.bat 里写死的是 C:\Users\user\makuris\target\release\makuris-host.exe，
+# run.bat 里写死的是 <WIN_HOME>\makuris\target\release\makuris-host.exe，
 # 所以这里也必须传到这里。第一版默认传到 .../makuris/dist，上传顺利完成、
 # 自检也都通过，但进程跑的其实还是旧文件——「部署成功」是假的。
 # 自检里会打印进程的实际 Path，就是为了让这种错位能被看出来。
+WIN_USER="${MAKURIS_WIN_USER:-user}"
+WIN_HOME="${MAKURIS_WIN_HOME:-C:/Users/$WIN_USER}"
 SSH_TARGET="${MAKURIS_HOST_SSH:-user@192.168.1.223}"
-REMOTE_DIR="${MAKURIS_WIN_DIR:-C:/Users/user/makuris/target/release}"
+REMOTE_DIR="${MAKURIS_WIN_DIR:-$WIN_HOME/makuris/target/release}"
 TASK_NAME="${MAKURIS_TASK:-MakurisHost}"
 TARGET="x86_64-pc-windows-gnu"
 BIN_NAME="makuris-host"
@@ -190,7 +205,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_TARGET" "dir /b \"${REMOTE_DIR//
 # 只在缺失时设置，不覆盖用户已有的值——用户可能故意指向公网隧道地址。
 # 服务器已 TLS-only（2026-10-12 起明文 ws 直接被掐断，客户端表现为 -1005
 # 反复重试），默认值必须是 wss。
-SIGNALING_URL="${MAKURIS_SIGNALING:-wss://203.0.113.10:8443/ws}"
+SIGNALING_URL="${MAKURIS_SIGNALING:-wss://signal.example.com:8443/ws}"
 DEVICE_ID="${MAKURIS_DEVICE_ID:-host-win-01}"
 
 # 接入密钥：信令服务器开启密钥校验后，注册报文必须附 key_proof
@@ -252,12 +267,12 @@ done
 # 的活动变量，而不是注册表级变量）。2026-10-12 部署实测踩过：setx 自检全绿、
 # 进程却仍连 bat 里写死的旧局域网地址，云端永远等不到注册。
 # sync-runbat.ps1 幂等：已一致输出 ALREADY_OK，缺失则插入 set 行。
-RUN_BAT="${MAKURIS_RUN_BAT:-C:/Users/user/makuris-run.bat}"
+RUN_BAT="${MAKURIS_RUN_BAT:-$WIN_HOME/makuris-run.bat}"
 say "同步 run.bat 的信令地址（防 cmd set 覆盖 setx，见脚本注释）"
 scp -q -o BatchMode=yes -o ConnectTimeout=10 "$REPO_ROOT/scripts/windows/sync-runbat.ps1" \
-  "$SSH_TARGET:C:/Users/user/sync-runbat.ps1" >/dev/null
+  "$SSH_TARGET:$WIN_HOME/sync-runbat.ps1" >/dev/null
 ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_TARGET" \
-  "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\user\sync-runbat.ps1 -Url \"$SIGNALING_URL\" -BatPath \"$RUN_BAT\"" \
+  "powershell -NoProfile -ExecutionPolicy Bypass -File $WIN_HOME/sync-runbat.ps1 -Url \"$SIGNALING_URL\" -BatPath \"$RUN_BAT\"" \
   | tr -d '\r'
 
 # ---------- 4.6 确保防火墙放行局域网入站 ----------
@@ -279,7 +294,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_TARGET" \
 # 远端 exe 路径与 REMOTE_DIR 一致（正斜杠形式即可，PowerShell 两种都认）。
 say "确保防火墙放行局域网入站（删 Block + 建 Allow，幂等）"
 scp -q -o BatchMode=yes -o ConnectTimeout=10 "$REPO_ROOT/scripts/windows/ensure-firewall.ps1" \
-  "$SSH_TARGET:C:/Users/user/ensure-firewall.ps1" >/dev/null
+  "$SSH_TARGET:$WIN_HOME/ensure-firewall.ps1" >/dev/null
 # 用 -File 加位置参数（-Command 拼接在 cmd 引号下易被截断，实测踩过）。
 # 必须把远端 exe 的确切路径作为第一个参数传入：Allow 规则按程序路径限定，
 # REMOTE_DIR 是本脚本唯一的事实来源。靠 ps1 里的默认值兜底的话，一旦改了
@@ -287,7 +302,7 @@ scp -q -o BatchMode=yes -o ConnectTimeout=10 "$REPO_ROOT/scripts/windows/ensure-
 # 该脚本以非零码表示「仍有 Block 残留」，这里不让它中断整个部署，
 # 只把结果显式打出来——被控端在公网仍可用，局域网不可用是可接受的降级。
 if ssh -o BatchMode=yes -o ConnectTimeout=25 "$SSH_TARGET" \
-    "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\user\ensure-firewall.ps1 \"$REMOTE_DIR/$BIN_NAME.exe\"" \
+    "powershell -NoProfile -ExecutionPolicy Bypass -File $WIN_HOME/ensure-firewall.ps1 \"$REMOTE_DIR/$BIN_NAME.exe\"" \
     | tr -d '\r'; then
   echo "  ✅ 防火墙已放行（局域网直连可用）"
 else

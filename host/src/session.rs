@@ -212,7 +212,7 @@ pub async fn run_session(
     // 【踩坑记录，勿再“修”】host 候选的地址必须与 socket 的绑定地址严格一致
     // （这里绑的是 0.0.0.0，就必须写 0.0.0.0）。原因在 rtc-ice：收到入站包时它用
     // transport.local_addr（就是 socket 的绑定地址）去 find_local_candidate 做
-    // **精确相等**匹配，匹配不上直接丢弃整包。曾经把这里改成真实的 192.168.1.3，
+    // **精确相等**匹配，匹配不上直接丢弃整包。曾经把这里改成真实的 192.168.1.100，
     // 理由是「0.0.0.0 对端发不进来」，结果入站包全被丢（日志刷
     // "Discarded message, not a valid local candidate from UDP:0.0.0.0:xxx"），
     // ICE 失败、推送 0 帧，现象是配对成功却永远黑屏。

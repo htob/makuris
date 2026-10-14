@@ -22,15 +22,25 @@
 #   scripts/deploy-signaling.sh --no-build # 跳过编译，用云端已有产物重新部署
 #
 # 环境变量（都有默认值）：
-#   MAKURIS_CLOUD_SSH        SSH 目标，默认 root@203.0.113.10
+#   MAKURIS_CLOUD_SSH        SSH 目标，默认 root@203.0.113.10（占位）
 #   MAKURIS_CLOUD_SRC        云端源码目录，默认 /root/makuris
 #   MAKURIS_ACCESS_KEY       接入密钥；默认从本地 access-key.txt 读。
 #                            必须与两端被控端用的同一把，否则设备全部注册不上。
-#   MAKURIS_TURN_PUBLIC_IP   TURN 对外地址用的公网 IP，默认 203.0.113.10
+#   MAKURIS_TURN_PUBLIC_IP   TURN 对外地址用的公网 IP，默认 203.0.113.10（占位）
+#
+# 以上都可在 scripts/.deploy.env 里写真实值（该文件不进版本库，脚本会自动加载）。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+# 加载本地私密配置（不存在则跳过，脚本按内置占位默认值运行）
+if [[ -f "$REPO_ROOT/scripts/.deploy.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/.deploy.env"
+  set +a
+fi
 
 SSH_TARGET="${MAKURIS_CLOUD_SSH:-root@203.0.113.10}"
 CLOUD_SRC="${MAKURIS_CLOUD_SRC:-/root/makuris}"

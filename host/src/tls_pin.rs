@@ -7,7 +7,7 @@
 //! 同步更新两端 pin（本文件与 iOS SignalingClient.swift 各存一份）。
 //!
 //! 证书在云服务器 /etc/makuris/tls/cert.pem（EC P-256，2036 年到期，
-//! SAN=IP:203.0.113.10），重新生成方法见知识库部署文档。
+//! SAN=IP:<你的信令服务器 IP>），重新生成方法见文档。
 
 use std::sync::Arc;
 

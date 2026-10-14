@@ -8,11 +8,14 @@
 #
 # 不用 XML 注册：schtasks /xml 对编码/序列化很敏感（实测报 (1,40) 无法序列化），
 # 而 Register-ScheduledTask 能显式指定 RunLevel 与 WorkingDirectory，更可靠。
+#
+# 账户与路径都从当前环境推导，不写死任何用户名。
 $ErrorActionPreference = 'Stop'
 
-$user = 'PC\user'
-$bat  = 'C:\Users\user\makuris-run.bat'
-$wd   = 'C:\Users\user\makuris'
+$user = "$env:COMPUTERNAME\$env:USERNAME"
+$home_ = $env:USERPROFILE
+$bat  = "$home_\makuris-run.bat"
+$wd   = "$home_\makuris"
 
 $action    = New-ScheduledTaskAction -Execute $bat -WorkingDirectory $wd
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $user

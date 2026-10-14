@@ -14,7 +14,7 @@ Get-NetIPAddress -ErrorAction SilentlyContinue |
 
 $lines += ''
 $lines += '=== B. host.log 中 mdns/组播相关行（最后 20 条）==='
-$log = 'C:\Users\user\makuris\host.log'
+$log = "$env:USERPROFILE\makuris\host.log"
 if (Test-Path $log) {
   $hits = Select-String -Path $log -Pattern 'mdns', 'multicast', 'IPv4 socket', 'Skipped', 'join multicast', '5353' |
     Select-Object -Last 20
@@ -43,5 +43,5 @@ Get-NetUDPEndpoint -LocalPort 5353 -ErrorAction SilentlyContinue | ForEach-Objec
 }
 
 $lines += 'DONE'
-$lines | Out-File -FilePath 'C:\Users\user\makuris\diag-net.txt' -Encoding UTF8
+$lines | Out-File -FilePath "$env:USERPROFILE\makuris\diag-net.txt" -Encoding UTF8
 $lines | ForEach-Object { $_ }

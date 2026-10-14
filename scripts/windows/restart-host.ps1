@@ -30,8 +30,8 @@ if ($p) {
 }
 
 Start-Sleep -Seconds 6
-if (Test-Path 'C:\Users\user\makuris\host.log') {
-    $t = Get-Content 'C:\Users\user\makuris\host.log' -Tail 220 -EA SilentlyContinue
+if (Test-Path "$env:USERPROFILE\makuris\host.log") {
+    $t = Get-Content "$env:USERPROFILE\makuris\host.log" -Tail 220 -EA SilentlyContinue
     Add('--BOOT--')
     ($t | Select-String 'register|注册|TURN|凭证|广播|监听|配对|start|Start|连接信令' | Select-Object -Last 16) | ForEach-Object {
         Add('  ' + $_.Line.Substring(0, [Math]::Min(170, $_.Line.Length)))
@@ -42,5 +42,5 @@ if (Test-Path 'C:\Users\user\makuris\host.log') {
     Add('LOG_MISSING')
 }
 
-$O -join "`r`n" | Out-File -FilePath 'C:\Users\user\restart.out' -Encoding UTF8
+$O -join "`r`n" | Out-File -FilePath "$env:USERPROFILE\restart.out" -Encoding UTF8
 Write-Output 'RESTART_DONE'

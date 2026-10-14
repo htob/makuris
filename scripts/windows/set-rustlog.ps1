@@ -10,7 +10,7 @@ param(
     [switch]$Show
 )
 
-$bat = "C:\Users\user\makuris-run.bat"
+$bat = "$env:USERPROFILE\makuris-run.bat"
 if (-not (Test-Path $bat)) {
     Write-Output "ERR: $bat 不存在"
     exit 1

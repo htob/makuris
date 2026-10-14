@@ -23,7 +23,7 @@
 	<array>
 		<string>audio</string>
 	</array>
-	<!-- ATS 例外：信令走明文 ws:// 到云服务器裸 IP（203.0.113.10:8443）。
+	<!-- ATS 例外：信令走明文 ws:// 到云服务器裸 IP。
 	     iOS 默认禁止明文 HTTP/WS，且公网 IP 不在豁免范围（仅 localhost/.local/
 	     私有网段豁免），不放行则 URLSessionWebSocketTask 直接拒连、用户只看到
 	     「连接失败」。媒体流走 WebRTC（DTLS-SRTP 加密），不受 ATS 约束。

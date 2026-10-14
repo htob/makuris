@@ -1,13 +1,13 @@
 param(
-    [string]$Url = 'wss://203.0.113.10:8443/ws',
-    [string]$BatPath = 'C:\Users\user\makuris-run.bat'
+    [string]$Url = 'wss://your-signaling-host:8443/ws',
+    [string]$BatPath = "$env:USERPROFILE\makuris-run.bat"
 )
 # Sync the "set MAKURIS_SIGNALING=..." line in run.bat to $Url. Idempotent.
 #
 # Why this exists: the scheduled task runs makuris-run.bat, whose cmd `set`
 # OVERRIDES the user-level env var written by setx (a child process inherits
 # the parent cmd's live variables, and set wins over the registry-level ones).
-# 2026-10-12 deploy proved it: setx showed wss://203.0.113.10 (all green) while
+# 2026-10-12 deploy proved it: setx showed the cloud wss URL (all green) while
 # the process kept dialing the legacy LAN address hardcoded in the bat.
 #
 # ASCII-only body: Windows PowerShell 5.1 decodes BOM-less files as ANSI(GBK).

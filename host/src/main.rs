@@ -148,9 +148,12 @@ async fn main() -> Result<()> {
     // 不能统一退回 "host-mac-01"：Windows 机器会自称 mac（实测日志里
     // Windows host 报的是 host-mac-01，而运行脚本明明设了 host-win-01），
     // 多机场景下更会与真正的 Mac 撞同一个 ID。
+    //
+    // 信令地址同理：默认值是占位示例，实际由 MAKURIS_SIGNALING 环境变量指定
+    // （部署脚本会写入；内置默认仅在完全未配置时兜底，正常连不上）。
     let device_id = std::env::var("MAKURIS_DEVICE_ID").unwrap_or_else(|_| default_device_id());
     let signaling_url = std::env::var("MAKURIS_SIGNALING")
-        .unwrap_or_else(|_| "wss://203.0.113.10:8443/ws".to_string());
+        .unwrap_or_else(|_| "wss://your-signaling-host:8443/ws".to_string());
     let udp_port: u16 = std::env::var("MAKURIS_UDP_PORT")
         .ok()
         .and_then(|p| p.parse().ok())

@@ -28,7 +28,7 @@ if ($p) {
 }
 
 $o += '--- host.log tail (non-ASCII replaced) ---'
-$log = 'C:\Users\user\makuris\host.log'
+$log = "$env:USERPROFILE\makuris\host.log"
 if (Test-Path $log) {
   Get-Content $log -Tail 6 -ErrorAction SilentlyContinue | ForEach-Object {
     $t = $_
@@ -39,5 +39,5 @@ if (Test-Path $log) {
 else { $o += 'LOG missing' }
 
 $o += 'DONE'
-$o | Out-File -FilePath 'C:\Users\user\makuris\diag-ascii.txt' -Encoding ascii
+$o | Out-File -FilePath "$env:USERPROFILE\makuris\diag-ascii.txt" -Encoding ascii
 $o | ForEach-Object { $_ }

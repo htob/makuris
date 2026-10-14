@@ -10,10 +10,17 @@
 #
 # secret 不进 unit 文件（world-readable），wrapper 700 权限、运行时读
 # /etc/makuris/turn.env（600）。
+#
+# 【使用前必须改】下面的 realm 与公网/内网 IP 都是占位值，换成你自己的。
 set -eu
 S=$(sed -n 's/^MAKURIS_TURN_SECRET=//p' /etc/makuris/turn.env | head -n1 | tr -d "[:space:]")
 [ -n "$S" ] || { echo "NO SECRET IN turn.env"; exit 1; }
 echo "secret len=${#S}"
+
+# 换成你自己的 realm / 公网 IP / 内网 IP
+TURN_REALM=example.org
+TURN_PUBLIC_IP=203.0.113.10
+TURN_INTERNAL_IP=172.19.0.2
 
 cat > /usr/local/bin/makuris-turn-wrapper.sh <<WRAP
 #!/bin/bash
@@ -21,11 +28,11 @@ S=\$(sed -n 's/^MAKURIS_TURN_SECRET=//p' /etc/makuris/turn.env | head -n1 | tr -
 exec /usr/local/bin/turnserver -n \\
   --use-auth-secret \\
   --static-auth-secret="\$S" \\
-  --realm=e717c6730bc9b8c9 \\
+  --realm=$TURN_REALM \\
   --fingerprint \\
   --min-port=49162 --max-port=49300 \\
-  -X 203.0.113.10/172.19.0.2 \\
-  -E 172.19.0.2 \\
+  -X $TURN_PUBLIC_IP/$TURN_INTERNAL_IP \\
+  -E $TURN_INTERNAL_IP \\
   --listening-port=3478 \\
   --alt-listening-port=49161 \\
   -v -v -v
@@ -47,6 +54,6 @@ echo ""
 TS=$(( $(date +%s) + 300 )); USER2="$TS:restcheck"
 CRED=$(printf %s "$USER2" | openssl dgst -sha1 -hmac "$S" -binary | base64)
 echo "--- uclient $USER2 ---"
-timeout 12 turnutils_uclient -T -u "$USER2" -p "$CRED" 172.19.0.2 2>&1 \
+timeout 12 turnutils_uclient -T -u "$USER2" -p "$CRED" "$TURN_INTERNAL_IP" 2>&1 \
   | grep -iE "relay addr|success|ERROR|fail" | head -4
 echo "$USER2" | grep -q . && echo "DONE"

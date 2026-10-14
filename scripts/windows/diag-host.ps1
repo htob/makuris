@@ -10,7 +10,7 @@ if ($p) {
     $exe = $p.Path
 } else {
     Add('HOST_PID=NONE')
-    $exe = 'C:\Users\user\makuris\makuris-host.exe'
+    $exe = "$env:USERPROFILE\makuris\makuris-host.exe"
 }
 if (Test-Path $exe) {
     $h = (Get-FileHash $exe -Algorithm SHA256).Hash
@@ -23,7 +23,7 @@ if ($p) {
     Add("UDP_TOTAL=$($u.Count) UDP_5353=$(@($u | Where-Object { $_.LocalPort -eq 5353 }).Count)")
 }
 
-$log = 'C:\Users\user\makuris\host.log'
+$log = "$env:USERPROFILE\makuris\host.log"
 if (Test-Path $log) {
     $fi = Get-Item $log
     Add("LOG_MTIME=$($fi.LastWriteTime.ToString('MM-dd HH:mm:ss')) LOG_SIZE=$($fi.Length)")
@@ -46,5 +46,5 @@ if (Test-Path $log) {
     Add('LOG_MISSING')
 }
 
-$O -join "`r`n" | Out-File -FilePath 'C:\Users\user\diag.out' -Encoding UTF8
+$O -join "`r`n" | Out-File -FilePath "$env:USERPROFILE\diag.out" -Encoding UTF8
 Write-Output 'DIAG_DONE'

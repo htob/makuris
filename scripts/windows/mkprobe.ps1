@@ -2,7 +2,7 @@
 # 用完全相同的 Win32 调用移动一次光标并读回真实位置。
 # 目的：区分「SendInput 返回成功但被系统吞掉」与「注入其实生效、问题在别处」。
 # 只移动光标、不点击，结束后恢复原位。
-$out = 'C:\Users\user\mkprobe.out'
+$out = "$env:USERPROFILE\mkprobe.out"
 Set-Content -Path $out -Value '=== Makuris inject probe ===' -Encoding utf8
 
 Add-Type -TypeDefinition @'

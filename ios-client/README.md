@@ -1,15 +1,3 @@
----
-name: ios_client_readme
-title: ios-client
-description: iOS 控制端，Swift + WebRTC（stasel/WebRTC 预编译框架）。
-summary: iOS 控制端，Swift + WebRTC，含 Bonjour 自动发现与多电脑地址管理。
-keywords:
-  - iOS
-  - WebRTC
-  - Bonjour
-category: Users/user/code/makuris/ios-client
----
-
 # ios-client
 
 iOS 控制端，Swift + WebRTC（stasel/WebRTC 预编译框架）。

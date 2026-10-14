@@ -1,16 +1,3 @@
----
-name: ios_setup
-title: iOS 客户端构建指南
-description: macOS + 完整 Xcode 16+ （App Store 下载，约 12GB） iOS 真机（推荐）或模拟器 被控端（host）已在局域网运行 1.
-summary: macOS + 完整 Xcode 16+ App Store 下载，iOS 真机或模拟器，被控端 host 已在局域网运行。
-keywords:
-  - iOS
-  - Xcode
-  - Makuris
-  - 构建
-category: Users/user/code/makuris/ios-client
----
-
 # iOS 客户端构建指南
 
 ## 前置条件

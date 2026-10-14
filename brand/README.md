@@ -1,12 +1,3 @@
----
-name: makuris_readme
-title: Makuris 品牌资产
-description: logo 1024.png — 唯一母版（1024×1024，无透明通道，M 字母标：深炭蓝底 + 琥珀渐变 M，右笔画收尖成光标箭头，背景三道同心信号环）。
-summary: logo 1024.png — 唯一母版（1024×1024，无透明通道，M 字母标：深炭蓝底 + 琥珀渐变 M，右笔画收尖成光标箭头，背景三道同心信号环）。
-keywords: []
-category: Users/user/code/makuris/brand
----
-
 # Makuris 品牌资产
 
 ## 文件

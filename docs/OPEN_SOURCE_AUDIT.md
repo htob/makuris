@@ -1,12 +1,3 @@
----
-name: 2026_10_12_open_source_audit
-title: 开源前安全审计报告（2026-10-12）
-description: 目的：git push 到公开仓库之前的全仓风险排查。排查范围：host / signaling server / ios client / scripts / packaging / deploy / proto / brand / .cargo。
-summary: 目的：git push 到公开仓库之前的全仓风险排查。排查范围：host / signaling server / ios client / scripts / packaging / deploy / proto / brand / .cargo。
-keywords: []
-category: Users/user/code/makuris/docs
----
-
 # 开源前安全审计报告（2026-10-12）
 
 > 目的：git push 到公开仓库之前的全仓风险排查。排查范围：host / signaling-server / ios-client / scripts / packaging / deploy / proto / brand / .cargo。

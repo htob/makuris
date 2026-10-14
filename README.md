@@ -151,6 +151,27 @@ Key settings such as the Bonjour permission declaration are in [ios-client/SETUP
 cargo test -p makuris-proto
 ```
 
+## Installing the iOS app
+
+Building the viewer is only half of it: getting it onto an actual iPhone is a separate
+step, because iOS only installs an app that was signed for that particular device. There
+is no prebuilt `.ipa` in this repository that can simply be dropped onto a phone.
+
+[**ios-client/INSTALL.md**](ios-client/INSTALL.md) covers the three practical routes:
+
+1. **Sign it yourself with a free Apple ID** — with Xcode's *personal team*, or with a
+   third-party side-loading tool if you do not own a Mac. The signature lasts about 7 days
+   and then has to be renewed.
+2. **Build from source and Run** — the developer route, described in
+   [ios-client/SETUP.md](ios-client/SETUP.md).
+3. **Join the Apple Developer Program** (99 USD/year) — required to distribute the app to
+   other people through Ad Hoc or TestFlight, and the only way to get a signature that does
+   not expire every week.
+
+That document also answers the usual questions: *"Untrusted Developer"* warnings, an app
+that stopped opening after a week, and what to do if the default bundle identifier
+`cc.makwo.makuris` is already taken by another account.
+
 ## Configuration
 
 ### Host

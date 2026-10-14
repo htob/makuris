@@ -142,12 +142,29 @@ open ios-client/Makuris.xcodeproj
 ```
 
 Bonjour 权限声明等关键配置见 [ios-client/SETUP.md](ios-client/SETUP.md)。
+把构建出来的 App 装进自己的手机是另一件事，见[安装 iOS 客户端](#安装-ios-客户端)。
 
 ### 5. 跑测试
 
 ```bash
 cargo test -p makuris-proto
 ```
+
+## 安装 iOS 客户端
+
+构建出工程只是一半，把 App 装进自己的 iPhone 是另一半：iOS 只安装针对这台设备签名过的应用，
+所以本仓库里没有一个下载下来就能装的 `.ipa`。
+
+[**ios-client/INSTALL.md**](ios-client/INSTALL.md) 里写了三条实际可行的路径：
+
+1. **用免费 Apple ID 自己签名**——用 Xcode 的 *personal team*；没有 Mac 的话用第三方自签工具。
+   签名大约 7 天后失效，届时需要重新签一次。
+2. **自己构建后直接 Run**——开发者路线，见 [ios-client/SETUP.md](ios-client/SETUP.md)。
+3. **加入 Apple Developer Program**（99 美元/年）——要把 App 通过 Ad Hoc 或 TestFlight 分发给
+   别人就必须付费，这也是唯一能让签名不每周过期的办法。
+
+那份文档同时回答了这些常见问题：提示「不受信任的开发者」怎么处理、用了一周后 App 打不开，
+以及默认 bundle identifier `cc.makwo.makuris` 已被其他账号占用时该怎么办。
 
 ## 配置项
 

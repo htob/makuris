@@ -155,6 +155,8 @@ struct StatusBarLayout {
 /// 延迟和帧率还能一眼看到——卡顿时能立刻分清是网络问题还是远端机器忙。
 struct SessionStatusBar: View {
     @ObservedObject var session: WebRTCSession
+    /// 界面语言：状态条上的按钮与指标标签都要跟着切
+    @EnvironmentObject private var l10n: L10nStore
     let keyboard: RemoteKeyboardController
     let vertical: Bool
     /// 空间局促时用更透的底（仍保证白字可读），避免把底下的画面挡死
@@ -225,28 +227,28 @@ struct SessionStatusBar: View {
     private var portraitContent: some View {
         VStack(spacing: 14) {
             HStack {
-                circleButton(icon: "house.fill", label: "返回主页",
+                circleButton(icon: "house.fill", label: l10n.t(.backToHome),
                              colors: goldButton) { onHome() }
                 Spacer(minLength: 0)
-                Text("远程会话")
+                Text(l10n.t(.remoteSession))
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .tracking(2)
                     .foregroundColor(ink.opacity(0.42))
                 Spacer(minLength: 0)
-                circleButton(icon: "keyboard", label: "远程键盘",
+                circleButton(icon: "keyboard", label: l10n.t(.remoteKeyboard),
                              colors: sandButton) { keyboard.toggle() }
             }
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
-                    metricCell("延迟", stats.rttText)
+                    metricCell(l10n.t(.metricLatency), stats.rttText)
                     gridLine(vertical: true)
-                    metricCell("帧率", stats.fpsText)
+                    metricCell(l10n.t(.metricFps), stats.fpsText)
                 }
                 gridLine(vertical: false)
                 HStack(spacing: 0) {
-                    metricCell("码率", stats.bitrateText)
+                    metricCell(l10n.t(.metricBitrate), stats.bitrateText)
                     gridLine(vertical: true)
-                    metricCell("分辨率", stats.resolutionText)
+                    metricCell(l10n.t(.metricResolution), stats.resolutionText)
                 }
             }
         }
@@ -256,19 +258,19 @@ struct SessionStatusBar: View {
     /// 指标一律用缩写（32 / 7ms / 1.4M / 1964p），标签与数值上下叠放。
     private var landscapeContent: some View {
         VStack(spacing: 12) {
-            circleButton(icon: "house.fill", label: "返回主页",
+            circleButton(icon: "house.fill", label: l10n.t(.backToHome),
                          colors: goldButton) { onHome() }
             // 紧凑版只留按钮：横屏弹键盘时可用高度只剩 200pt 出头，
             // 塞不下四项指标，硬塞会有半截被键盘压住
             if !compact {
                 gridLine(vertical: false)
-                miniMetric("帧率", short(stats.fpsText))
-                miniMetric("延迟", short(stats.rttText))
-                miniMetric("码率", short(stats.bitrateText))
-                miniMetric("分辨率", compactResolution)
+                miniMetric(l10n.t(.metricFps), short(stats.fpsText))
+                miniMetric(l10n.t(.metricLatency), short(stats.rttText))
+                miniMetric(l10n.t(.metricBitrate), short(stats.bitrateText))
+                miniMetric(l10n.t(.metricResolution), compactResolution)
                 gridLine(vertical: false)
             }
-            circleButton(icon: "keyboard", label: "远程键盘",
+            circleButton(icon: "keyboard", label: l10n.t(.remoteKeyboard),
                          colors: sandButton) { keyboard.toggle() }
         }
     }

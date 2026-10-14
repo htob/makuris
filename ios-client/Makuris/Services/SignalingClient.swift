@@ -43,11 +43,51 @@ enum PairingTokenStore {
 /// 早先用一个 Bool 表示连接与否，界面无法区分「正在连」和「连不上」，
 /// 用户只能看到一个红点却不知道发生了什么。这里把失败原因也带上，
 /// 以便直接显示给用户（例如地址填错、电脑没开机）。
+/// 连接失败的原因。
+///
+/// 存的是「失败种类」而不是成品句子：界面语言可以随时切换，
+/// 状态里若直接存中文句子，切到英文后这句提示就换不过来了。
+enum SignalFailure: Equatable {
+    /// 地址写错，连 URL 都拼不出来
+    case invalidAddressFormat
+    /// 连上了服务器，但那上面没有在线的被控端
+    case noOnlineDevice
+    /// 用户填的地址无法解析成可连接地址
+    case addressUnrecognized(String)
+    /// 最常见的一种：电脑没开、地址不对、或不在同一网络
+    case cannotConnect
+    case timeout
+    case offline
+    case connectFailed(Int)
+    /// 服务端原样下发的错误（如接入密钥不符）：无法本地化，照原样显示
+    case server(String)
+    /// 地址无法识别。通道扫描用：那条地址没有可回显的输入
+    case addressUnrecognizedShort
+    /// 这条通道连不上。通道扫描的短结论
+    case cannotConnectShort
+
+    /// 当前语言下的说明文案。
+    var text: String {
+        switch self {
+        case .invalidAddressFormat: return L10n.t(.invalidAddressFormat)
+        case .noOnlineDevice: return L10n.t(.noOnlineDeviceHint)
+        case .addressUnrecognized(let raw): return L10n.t(.addressUnrecognized, raw)
+        case .cannotConnect: return L10n.t(.cannotConnectHint)
+        case .timeout: return L10n.t(.connectTimeoutCheckNetwork)
+        case .offline: return L10n.t(.phoneOffline)
+        case .connectFailed(let code): return L10n.t(.connectFailedWithCode, code)
+        case .server(let message): return message
+        case .addressUnrecognizedShort: return L10n.t(.addressUnrecognizedShort)
+        case .cannotConnectShort: return L10n.t(.cannotConnectShort)
+        }
+    }
+}
+
 enum SignalingState: Equatable {
     case disconnected
     case connecting
     case connected
-    case failed(String)
+    case failed(SignalFailure)
 
     var isConnected: Bool {
         if case .connected = self { return true }
@@ -57,10 +97,10 @@ enum SignalingState: Equatable {
     /// 供界面显示的简短说明
     var label: String {
         switch self {
-        case .disconnected: return "未连接"
-        case .connecting: return "正在连接…"
-        case .connected: return "已就绪"
-        case .failed: return "连接失败"
+        case .disconnected: return L10n.t(.statusNotConnected)
+        case .connecting: return L10n.t(.stateConnecting)
+        case .connected: return L10n.t(.stateReady)
+        case .failed: return L10n.t(.connectionFailed)
         }
     }
 }
@@ -152,7 +192,7 @@ class SignalingClient: NSObject, ObservableObject {
         self.lastURL = url
         self.lastRole = role
         guard let wsURL = URL(string: url) else {
-            DispatchQueue.main.async { self.state = .failed("地址格式不正确") }
+            DispatchQueue.main.async { self.state = .failed(.invalidAddressFormat) }
             print("[signaling] invalid URL: \(url)")
             return
         }
@@ -235,14 +275,14 @@ class SignalingClient: NSObject, ObservableObject {
     func reportJoinTimeout() {
         DispatchQueue.main.async {
             guard self.devices.isEmpty, !self.state.isConnected else { return }
-            self.state = .failed("没找到在线的电脑：请确认被控端已启动，且与本机填的是同一个信令服务器")
+            self.state = .failed(.noOnlineDevice)
         }
     }
 
     /// 保存的地址无法解析成可连接地址时告知用户。
     func reportInvalidAddress(_ raw: String) {
         DispatchQueue.main.async {
-            self.state = .failed("地址无法识别：\(raw)")
+            self.state = .failed(.addressUnrecognized(raw))
         }
     }
 
@@ -433,17 +473,17 @@ class SignalingClient: NSObject, ObservableObject {
 
     /// 把 URLSession 的原始错误翻译成用户能看懂的一句话。
     /// 局域网场景下最常见的就是「电脑没开 / 地址不对 / 不在同一网络」。
-    private static func friendlyReason(_ error: Error) -> String {
+    private static func friendlyReason(_ error: Error) -> SignalFailure {
         let ns = error as NSError
         switch ns.code {
         case NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost:
-            return "连不上，请确认电脑已启动且与手机在同一网络"
+            return .cannotConnect
         case NSURLErrorTimedOut:
-            return "连接超时，请检查网络"
+            return .timeout
         case NSURLErrorNotConnectedToInternet:
-            return "手机未联网"
+            return .offline
         default:
-            return "连接失败（\(ns.code)）"
+            return .connectFailed(ns.code)
         }
     }
 
@@ -532,7 +572,7 @@ class SignalingClient: NSObject, ObservableObject {
             // 重试同一个错误配置，而真正的原因（密钥不符）就写在被丢弃的那条
             // 报文里。
             print("[signaling] server error: \(message)")
-            self.state = .failed(message)
+            self.state = .failed(.server(message))
             self.devices = []
 
         default:

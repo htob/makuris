@@ -17,6 +17,7 @@
 		A1B2C3D4E5F60718293A4B5C /* KeyboardInputCaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F60718293A4B5C6D /* KeyboardInputCaptureView.swift */; };
 		D3E4F5A6B7C8D9E0F1A2B3C4 /* SavedComputers.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A6B7C8D9E0F1A2B3C4D5E6 /* SavedComputers.swift */; };
 		E4F5A6B7C8D9E0F1A2B3C4D5 /* BonjourDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B7C8D9E0F1A2B3C4D5E6F7 /* BonjourDiscovery.swift */; };
+		313E687A2CB493756D9B0CFF /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = B779DC6413F0FAA34F97D703 /* L10n.swift */; };
 		B2BDE73F21F5B47BCFBB8D6E /* ChannelScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8764F6E0132C752BFEA593E0 /* ChannelScanner.swift */; };
 		AA11BB22CC33DD44EE550002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA11BB22CC33DD44EE550001 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
@@ -32,6 +33,7 @@
 		B2C3D4E5F60718293A4B5C6D /* KeyboardInputCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardInputCaptureView.swift; sourceTree = "<group>"; };
 		F5A6B7C8D9E0F1A2B3C4D5E6 /* SavedComputers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedComputers.swift; sourceTree = "<group>"; };
 		A6B7C8D9E0F1A2B3C4D5E6F7 /* BonjourDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BonjourDiscovery.swift; sourceTree = "<group>"; };
+		B779DC6413F0FAA34F97D703 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
 		8764F6E0132C752BFEA593E0 /* ChannelScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelScanner.swift; sourceTree = "<group>"; };
 		AA11BB22CC33DD44EE550001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -94,6 +96,7 @@
 				9FF53C9678AE6E9054FE444A /* WebRTCSession.swift */,
 				F5A6B7C8D9E0F1A2B3C4D5E6 /* SavedComputers.swift */,
 				A6B7C8D9E0F1A2B3C4D5E6F7 /* BonjourDiscovery.swift */,
+				B779DC6413F0FAA34F97D703 /* L10n.swift */,
 				8764F6E0132C752BFEA593E0 /* ChannelScanner.swift */,
 			);
 			path = Services;
@@ -191,6 +194,7 @@
 				A1B2C3D4E5F60718293A4B5C /* KeyboardInputCaptureView.swift in Sources */,
 				D3E4F5A6B7C8D9E0F1A2B3C4 /* SavedComputers.swift in Sources */,
 				E4F5A6B7C8D9E0F1A2B3C4D5 /* BonjourDiscovery.swift in Sources */,
+				313E687A2CB493756D9B0CFF /* L10n.swift in Sources */,
 				B2BDE73F21F5B47BCFBB8D6E /* ChannelScanner.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

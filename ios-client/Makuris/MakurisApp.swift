@@ -9,6 +9,8 @@ struct MakurisApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
+                // 界面语言：各视图订阅它，切换语言后无需重启 App 即可刷新文案
+                .environmentObject(L10nStore.shared)
         }
     }
 }

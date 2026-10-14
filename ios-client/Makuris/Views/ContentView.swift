@@ -3,6 +3,8 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    /// 界面语言：订阅它，切换语言后本页文案立即刷新（无需重启 App）
+    @EnvironmentObject private var l10n: L10nStore
     @StateObject private var signaling = SignalingClient()
     @StateObject private var rtcSession = WebRTCSession()
     @StateObject private var discovery = BonjourDiscovery()
@@ -85,7 +87,7 @@ struct ContentView: View {
                             Image(systemName: "gearshape")
                                 .foregroundColor(Brand.ink.opacity(0.75))
                         }
-                        .accessibilityLabel("设置")
+                        .accessibilityLabel(l10n.t(.settingsTitle))
 
                         Button {
                             showAddSheet = true
@@ -93,7 +95,7 @@ struct ContentView: View {
                             Image(systemName: "plus")
                                 .foregroundColor(Brand.accentDeep)
                         }
-                        .accessibilityLabel("添加电脑")
+                        .accessibilityLabel(l10n.t(.addComputer))
                     }
                 }
             }
@@ -201,7 +203,7 @@ struct ContentView: View {
                 }
             }
         } header: {
-            channelHeader("局域网", caption: "自动扫描")
+            channelHeader(l10n.t(.lanChannel), caption: l10n.t(.autoScan))
         }
     }
 
@@ -226,10 +228,10 @@ struct ContentView: View {
     private func channelRows(_ channel: ChannelScanner.Channel) -> some View {
         switch channel.state {
         case .scanning:
-            channelStatusRow("正在连接…", spinning: true)
+            channelStatusRow(l10n.t(.stateConnecting), spinning: true)
         case .online(let devices):
             if devices.isEmpty {
-                channelStatusRow("没有在线的电脑", spinning: false)
+                channelStatusRow(l10n.t(.noOnlineComputers), spinning: false)
             } else {
                 ForEach(devices) { device in
                     Button {
@@ -247,13 +249,13 @@ struct ContentView: View {
                         Button(role: .destructive) {
                             removeChannel(channel)
                         } label: {
-                            Label("删除通道", systemImage: "trash")
+                            Label(l10n.t(.deleteChannel), systemImage: "trash")
                         }
                     }
                 }
             }
         case .failed(let reason):
-            channelStatusRow("连不上：\(reason)", spinning: false)
+            channelStatusRow(l10n.t(.cannotConnectWithReason, reason.text), spinning: false)
         }
     }
 
@@ -299,7 +301,7 @@ struct ContentView: View {
     private var searchingRow: some View {
         HStack(spacing: 10) {
             if !discovery.isReady { ProgressView() }
-            Text(discovery.isReady ? "没找到电脑" : "正在查找…")
+            Text(discovery.isReady ? l10n.t(.noComputersFound) : l10n.t(.searching))
                 .font(.footnote)
                 .foregroundColor(Brand.ink.opacity(0.6))
         }
@@ -322,7 +324,7 @@ struct ContentView: View {
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(Brand.accentDeep)
                 }
-                Text("添加电脑")
+                Text(l10n.t(.addComputer))
                     .font(.subheadline)
                     .foregroundColor(Brand.ink.opacity(0.7))
                 Spacer()
@@ -336,10 +338,9 @@ struct ContentView: View {
 
     private var permissionHint: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("无法搜索局域网")
+            Text(l10n.t(.cannotSearchLan))
                 .font(.subheadline).bold()
-            Text("请在「设置 → 隐私与安全性 → 本地网络」中允许 Makuris 访问，"
-                 + "或点下方「添加电脑」手填地址连接。")
+            Text(l10n.t(.lanPermissionHint))
                 .font(.footnote)
                 .foregroundColor(Brand.ink.opacity(0.62))
         }
@@ -406,10 +407,10 @@ struct ContentView: View {
 
     private var statusText: String {
         switch signaling.state {
-        case .connected: return "在线"
-        case .connecting: return "连接中"
-        case .failed(let reason): return reason
-        case .disconnected: return "未连接"
+        case .connected: return l10n.t(.statusOnline)
+        case .connecting: return l10n.t(.statusConnecting)
+        case .failed(let reason): return reason.text
+        case .disconnected: return l10n.t(.statusNotConnected)
         }
     }
 
@@ -683,39 +684,53 @@ struct ContentView: View {
 struct SettingsView: View {
     @ObservedObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
+    /// 界面语言：本页既是切换入口，自己也要跟着切
+    @EnvironmentObject private var l10n: L10nStore
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("留空表示服务器未启用鉴权", text: $appState.accessKey)
+                    // 语言切换：选中即生效。不重启 App，也不要求返回首页，
+                    // 因为文案取值点都订阅了 L10nStore。
+                    Picker(l10n.t(.languageSection), selection: $l10n.language) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text(lang.displayName).tag(lang)
+                        }
+                    }
+                } header: {
+                    Text(l10n.t(.languageSection))
+                } footer: {
+                    Text(l10n.t(.languageHint))
+                }
+
+                Section {
+                    TextField(l10n.t(.accessKeyPlaceholder), text: $appState.accessKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
                 } header: {
-                    Text("信令接入密钥")
+                    Text(l10n.t(.signalingAccessKey))
                 } footer: {
-                    Text("只有通过中心服务器连接时才需要。密钥在电脑端启动信令服务器时"
-                         + "打印在日志里，两端填同一串。\n"
-                         + "同一 Wi-Fi 下直接发现的电脑不走服务器，无需填写。")
+                    Text(l10n.t(.accessKeyHint))
                 }
 
                 Section {
-                    LabeledContent("本机标识", value: appState.deviceId)
+                    LabeledContent(l10n.t(.deviceIdLabel), value: appState.deviceId)
                         .font(.footnote)
                 } footer: {
-                    Text("电脑端会看到这个标识，用于区分是哪台手机在连接。")
+                    Text(l10n.t(.deviceIdHint))
                 }
             }
             .scrollContentBackground(.hidden)
             .background(Brand.paper.ignoresSafeArea())
             .environment(\.colorScheme, .light)
             .toolbarBackground(.hidden, for: .navigationBar)
-            .navigationTitle("设置")
+            .navigationTitle(l10n.t(.settingsTitle))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button(l10n.t(.done)) { dismiss() }
                 }
             }
         }
@@ -726,6 +741,8 @@ struct SettingsView: View {
 struct AddComputerView: View {
     @ObservedObject var store: SavedComputersStore
     @Environment(\.dismiss) private var dismiss
+    /// 界面语言：本页文案要跟着设置里的选择变
+    @EnvironmentObject private var l10n: L10nStore
 
     @State private var name = ""
     @State private var address = ""
@@ -733,8 +750,8 @@ struct AddComputerView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("名称") {
-                    TextField("家里的 Mac", text: $name)
+                Section(l10n.t(.nameLabel)) {
+                    TextField(l10n.t(.namePlaceholder), text: $name)
                 }
                 Section {
                     TextField("192.168.1.3", text: $address)
@@ -743,13 +760,12 @@ struct AddComputerView: View {
                         .keyboardType(.URL)
                         .font(.system(.body, design: .monospaced))
                 } header: {
-                    Text("地址")
+                    Text(l10n.t(.addressLabel))
                 } footer: {
-                    Text("只填 IP 即可，端口与路径会自动补全。"
-                         + "不在同一 Wi-Fi 时填这台电脑可被访问的地址。")
+                    Text(l10n.t(.addressHint))
                 }
                 Section {
-                    LabeledContent("将连接", value: previewAddress)
+                    LabeledContent(l10n.t(.willConnect), value: previewAddress)
                         .font(.footnote)
                 }
             }
@@ -758,14 +774,14 @@ struct AddComputerView: View {
             .background(Brand.paper.ignoresSafeArea())
             .environment(\.colorScheme, .light)
             .toolbarBackground(.hidden, for: .navigationBar)
-            .navigationTitle("添加电脑")
+            .navigationTitle(l10n.t(.addComputerTitle))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button(l10n.t(.cancel)) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
+                    Button(l10n.t(.save)) {
                         store.add(name: name, address: address)
                         dismiss()
                     }
@@ -777,7 +793,7 @@ struct AddComputerView: View {
 
     private var previewAddress: String {
         let result = AppState.normalize(address)
-        return result.isEmpty ? "地址无效" : result
+        return result.isEmpty ? l10n.t(.invalidAddress) : result
     }
 }
 
@@ -786,6 +802,8 @@ struct RemoteScreenContainer: View {
     @ObservedObject var session: WebRTCSession
     @ObservedObject var signaling: SignalingClient
     @Binding var isPresented: Bool
+    /// 界面语言：连接阶段说明、配对面板都要跟着切
+    @EnvironmentObject private var l10n: L10nStore
     /// 退出回调：用于让主界面刷新设备列表
     var onExit: (() -> Void)?
 
@@ -1014,21 +1032,21 @@ struct RemoteScreenContainer: View {
     private var connectMessage: String {
         switch signaling.state {
         case .connecting:
-            return "正在连接服务器…"
+            return l10n.t(.connectingToServer)
         case .disconnected:
-            return "正在连接…"
+            return l10n.t(.stateConnecting)
         case .failed:
-            return "连接未能建立"
+            return l10n.t(.connectionNotEstablished)
         case .connected:
             if signaling.devices.isEmpty {
-                return "正在等待电脑响应…"
+                return l10n.t(.waitingForComputer)
             }
             // 成员名是 session：这个容器持有的是外部传入的共享 WebRTCSession，
             // 与主界面里那个 @StateObject rtcSession 是同一个对象的不同叫法
             if session.connectionState == .connected {
-                return "正在接收画面…"
+                return l10n.t(.receivingScreen)
             }
-            return "正在建立视频通道…"
+            return l10n.t(.establishingVideoChannel)
         }
     }
 
@@ -1037,10 +1055,10 @@ struct RemoteScreenContainer: View {
         // 超时优先于具体错误：走到这一步通常没有任何错误可归因
         // （信令可能连上了、会话也在建），只说「超时」最贴近事实
         if connectTimedOut {
-            return "连接超时。请确认电脑已开机并运行 Makuris，且网络可达。"
+            return l10n.t(.connectTimeoutHint)
         }
         if case .failed(let reason) = signaling.state {
-            return reason
+            return reason.text
         }
         return nil
     }
@@ -1102,7 +1120,7 @@ struct RemoteScreenContainer: View {
         pairingSubmitting = true
         if !signaling.submitPairingCode(pairingCode, for: req.hostId) {
             pairingSubmitting = false
-            pairingError = "配对会话已失效，请重新连接"
+            pairingError = l10n.t(.pairingSessionExpired)
         }
     }
 
@@ -1136,6 +1154,8 @@ struct ConnectOverlay: View {
     /// 失败原因；nil 表示仍在推进中
     let failure: String?
     var onCancel: () -> Void
+    /// 界面语言：遮罩上的「连接失败 / 首次连接需要几秒钟」等要跟着切
+    @EnvironmentObject private var l10n: L10nStore
 
     /// 是否处于失败态。失败时不能再转圈——转圈传达的是「还在努力」，
     /// 而这时其实已经停了，继续转会让人一直等下去。
@@ -1160,7 +1180,7 @@ struct ConnectOverlay: View {
                 }
 
                 VStack(spacing: 9) {
-                    Text(failed ? "连接失败" : message)
+                    Text(failed ? l10n.t(.connectionFailed) : message)
                         .font(.system(size: 17, weight: .semibold, design: .rounded))
                         .foregroundColor(Brand.ink)
 
@@ -1171,14 +1191,14 @@ struct ConnectOverlay: View {
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 34)
                     } else {
-                        Text("首次连接需要几秒钟")
+                        Text(l10n.t(.firstConnectTakesSeconds))
                             .font(.footnote)
                             .foregroundColor(Brand.ink.opacity(0.5))
                     }
                 }
 
                 Button(action: onCancel) {
-                    Text(failed ? "返回主页" : "取消")
+                    Text(failed ? l10n.t(.backToHome) : l10n.t(.cancel))
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundColor(Brand.ink)
                         .padding(.horizontal, 26)
@@ -1209,6 +1229,8 @@ struct PairingPrompt: View {
     let submitting: Bool
     var onCancel: () -> Void
     var onSubmit: () -> Void
+    /// 界面语言：配对面板上的按钮与提示要跟着切
+    @EnvironmentObject private var l10n: L10nStore
 
     @FocusState private var focused: Bool
 
@@ -1228,11 +1250,11 @@ struct PairingPrompt: View {
                     .font(.system(size: 30))
                     .foregroundColor(Brand.accentDeep)
 
-                Text("需要配对")
+                Text(l10n.t(.pairingRequired))
                     .font(.headline)
                     .foregroundColor(Brand.ink)
 
-                Text("在电脑端的 Makuris 里查看 6 位配对码，填入后即可控制 \(hostId)。")
+                Text(l10n.t(.pairingHint, hostId))
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundColor(Brand.ink.opacity(0.75))
@@ -1268,7 +1290,7 @@ struct PairingPrompt: View {
                 }
 
                 HStack(spacing: 12) {
-                    Button("取消", action: onCancel)
+                    Button(l10n.t(.cancel), action: onCancel)
                         .foregroundColor(Brand.ink.opacity(0.7))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 11)
@@ -1280,7 +1302,7 @@ struct PairingPrompt: View {
                             if submitting {
                                 ProgressView().tint(.white)
                             } else {
-                                Text("连接")
+                                Text(l10n.t(.connect))
                             }
                         }
                         .frame(maxWidth: .infinity)
@@ -1348,7 +1370,7 @@ extension ContentView {
             Text("Makuris")
                 .font(.system(size: 30, weight: .bold, design: .rounded))
                 .foregroundColor(Brand.ink)
-            Text("远程操控你的电脑")
+            Text(l10n.t(.appTagline))
                 .font(.system(size: 14, weight: .medium, design: .rounded))
                 .foregroundColor(Brand.ink.opacity(0.62))
         }

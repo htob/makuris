@@ -71,7 +71,7 @@ final class SavedComputersStore: ObservableObject {
             // 把它转成列表里的第一条，老用户升级后不必重新填一遍
             if let legacy = UserDefaults.standard.string(forKey: "makuris.serverAddress"),
                !legacy.isEmpty {
-                computers = [SavedComputer(name: "我的电脑", address: legacy)]
+                computers = [SavedComputer(name: L10n.t(.myComputer), address: legacy)]
                 save()
             }
             return

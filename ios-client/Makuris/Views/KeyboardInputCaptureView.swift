@@ -195,7 +195,8 @@ final class KeyboardAccessoryBar: UIView {
         addSubview(scrollView)
 
         var cfg = UIButton.Configuration.plain()
-        cfg.title = "收起"
+        // 键盘工具条是 UIKit 视图，不在 SwiftUI 的环境里，直接取当前语言
+        cfg.title = L10n.t(.keyboardHide)
         cfg.baseForegroundColor = .systemBlue
         dismissButton.configuration = cfg
         dismissButton.addAction(UIAction { [weak self] _ in self?.onDismiss() },

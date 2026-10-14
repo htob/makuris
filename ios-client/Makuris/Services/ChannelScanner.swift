@@ -7,8 +7,10 @@ enum ChannelScanState {
     case scanning
     /// 拿到了它下面的电脑。空数组表示这条地址连得上，但它上面没有在线的电脑。
     case online([DeviceInfo])
-    /// 连不上，或被服务器拒绝：把原因留下来给人看
-    case failed(String)
+    /// 连不上，或被服务器拒绝：把原因留下来给人看。
+    /// 存的是可翻译的失败种类（SignalFailure），不是成品句子——
+    /// 界面语言切换后，同一条通道的提示要能立刻换成另一种语言。
+    case failed(SignalFailure)
 }
 
 /// 通道扫描器：给每条已保存的地址各开一条独立连接，取回这条通道下面的电脑。
@@ -62,7 +64,7 @@ final class ChannelScanner: ObservableObject {
         for item in saved {
             let address = item.normalizedURL
             guard !address.isEmpty else {
-                apply(.failed("地址无法识别"), for: item, address: item.address)
+                apply(.failed(.addressUnrecognizedShort), for: item, address: item.address)
                 continue
             }
             // 复用要同时满足两条：地址没改，而且那条连接确实还活着。
@@ -146,7 +148,7 @@ final class ChannelScanner: ObservableObject {
                 // 连上了却没有电脑：这条地址上没有在线的被控端
                 self.apply(.online([]), for: item, address: item.address)
             } else {
-                self.apply(.failed("连不上"), for: item, address: item.address)
+                self.apply(.failed(.cannotConnectShort), for: item, address: item.address)
             }
         }
     }

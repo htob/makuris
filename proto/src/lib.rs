@@ -351,6 +351,29 @@ pub enum InputEvent {
     Text { content: String },
 }
 
+/// 控制端上报的链路质量：经 DataChannel 每秒一条，被控端据此自适应调整视频码率。
+///
+/// 为什么走 DataChannel 而不是信令：信令要绕云端多转发一圈，既慢又白占公网流量；
+/// 而这条控制通道本来就跑在同一对 ICE 候选上，它的往返开销与视频同路，最能反映
+/// 「此刻这条视频链路到底堵不堵」。
+///
+/// 为什么判据是丢包率而不是 RTT：丢包率直接说明「发得比链路能吃下的多」，而 RTT
+/// 混着排队延迟，在只有一路视频流时它更慢也更抖，拿来做阈值容易误判。
+///
+/// 字段全带 `#[serde(default)]`：老版本被控端读到未知 JSON 只会解析失败并打一条
+/// 警告，不会断流——协议升级不该把正在用的连接搞断。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct NetReport {
+    /// 最近一秒的丢包率（0.0~1.0，取不到的轮次填 0）。
+    pub loss: f32,
+    /// 最近一秒的平均 RTT（毫秒，取不到时填 0），仅用于日志。
+    #[serde(default)]
+    pub rtt_ms: f32,
+    /// 接收端估计的网络抖动（毫秒，取不到时填 0），仅用于日志。
+    #[serde(default)]
+    pub jitter_ms: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

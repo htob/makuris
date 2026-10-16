@@ -50,11 +50,25 @@ const EMPTY_FRAMES_BEFORE_KEYFRAME: u32 = 10;
 pub struct Pipeline {
     /// 编码后的 Annex-B 码流；接收端丢弃时流水线自动停止。
     pub frames: mpsc::Receiver<Bytes>,
+    /// 运行中切换编码目标码率的指令口（判据与步长见 `crate::netadapt`）。
+    ///
+    /// 为什么走「重建硬编会话」而不是 `VTSessionSetProperty`：后者要自己用 apple_cf
+    /// 拼 CFDictionary 绕过 crate 的封装，且改属性后编码器的码控状态不会立刻收敛；
+    /// 而码率调整是低频动作（最快 1.5 秒一次），重建一次硬编会话只要几十毫秒，代价
+    /// 可以忽略，还附带一个好处——新会话的首帧天然是 IDR，接收端正好借此立刻从丢包
+    /// 后遗症里恢复（不必再等 1 秒的关键帧周期）。
+    bitrate_tx: mpsc::Sender<i32>,
     #[cfg(target_os = "macos")]
     handles: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Pipeline {
+    /// 请求把编码目标码率切到 `bps`（下一帧生效）。流水线已退出时静默忽略。
+    pub fn set_bitrate(&self, bps: i32) {
+        // 容量 1：来不及处理的中间档位没有意义，丢掉比排队更符合「尽快贴合当前链路」
+        let _ = self.bitrate_tx.try_send(bps);
+    }
+
     /// 关闭流水线并等待工作线程退出。
     /// 关闭顺序：先断输出通道 → 编码线程写失败退出 → 采集线程随之退出。
     pub fn shutdown(mut self) {
@@ -129,6 +143,8 @@ pub fn spawn(
     }
 
     let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(2);
+    // 码率调整指令口：容量 1，只保留最新档位（中间态没有意义，堆积只会让调整滞后）
+    let (bitrate_tx, mut bitrate_rx) = mpsc::channel::<i32>(1);
     let frame_duration = Duration::from_millis(1000 / fps);
 
     // 采集线程：较慢的一环，负责帧节拍
@@ -191,6 +207,8 @@ pub fn spawn(
         .name("makuris-encode".to_owned())
         .spawn({
             let mut encoder = encoder;
+            // 当前生效的编码目标码率：自适应调整时用它判断要不要重建会话
+            let mut cur_bitrate = bitrate_bps;
             move || {
                 let mut frames: u64 = 0;
                 let mut total = Duration::ZERO;
@@ -198,6 +216,28 @@ pub fn spawn(
                 let mut empty_streak: u32 = 0;
                 let mut verified = false;
                 loop {
+                    // 自适应码率：只取最新档位（旧档位作废），换档要重建硬编会话——
+                    // 几十毫秒的代价，换来新会话首帧即 IDR，接收端正好借这一帧从
+                    // 「丢包后等关键帧」的僵住状态里立刻恢复。
+                    while let Ok(new_bps) = bitrate_rx.try_recv() {
+                        if new_bps == cur_bitrate {
+                            continue;
+                        }
+                        match VtEncoder::new(width, height, fps as u32, new_bps) {
+                            Ok(fresh) => {
+                                encoder = fresh;
+                                cur_bitrate = new_bps;
+                                tracing::info!(
+                                    "[encode] 目标码率自适应调整为 {} bps（已重建硬编会话）",
+                                    new_bps
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("[encode] 切换码率到 {} bps 失败: {}", new_bps, e);
+                            }
+                        }
+                    }
+
                     // 等待已填像素的 surface；通道关闭说明采集线程已退出
                     let Ok(surface) = ready_rx.recv() else { break };
 
@@ -277,7 +317,7 @@ pub fn spawn(
             }
         })?;
 
-    Ok(Pipeline { frames: frame_rx, handles: vec![cap_handle, enc_handle] })
+    Ok(Pipeline { frames: frame_rx, bitrate_tx, handles: vec![cap_handle, enc_handle] })
 }
 
 #[cfg(not(target_os = "macos"))]

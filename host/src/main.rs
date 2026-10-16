@@ -11,6 +11,7 @@ mod encode;
 mod input;
 mod lan;
 mod menubar;
+mod netadapt;
 mod netinfo;
 mod pairing;
 mod session;

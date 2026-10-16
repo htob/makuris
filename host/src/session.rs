@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bytes::BytesMut;
-use makuris_proto::{InputEvent, SdpType, SignalMsg};
+use makuris_proto::{InputEvent, NetReport, SdpType, SignalMsg};
 use rtc::peer_connection::event::RTCPeerConnectionEvent;
 use rtc::peer_connection::message::{RTCMessage, TaggedRTCMessage};
 use rtc::peer_connection::sdp::RTCSessionDescription;
@@ -79,11 +79,28 @@ pub enum SessionOut {
     Ice { candidate: String, sdp_mid: Option<String>, sdp_mline_index: i32 },
 }
 
-/// 目标码率：2x 物理分辨率下约 26 Mbps。
-/// 硬编支持真正的码率控制（不像 openh264 关闭跳帧后只能固定 QP），
-/// 码率给足，文字边缘的高频细节才不会被压糊。
-#[cfg(target_os = "macos")]
-const BITRATE_BPS: i32 = 26_000_000;
+/// 目标码率：默认 10 Mbps，可用 `MAKURIS_BITRATE_BPS` 环境变量覆盖。
+///
+/// 原来给的是 26 Mbps（理由：「2x 物理分辨率下文字边缘不被压糊」）。但被控端最典型
+/// 的链路是「手机蜂窝上行 → TURN 中继」，其可用带宽远低于 26 Mbps；而本项目的 SDP
+/// 不声明任何 RTCP 反馈（见 stream/mod.rs 的 rtcp_feedback），既没有带宽估计也没有
+/// 重传，发送端无从知道该降速——多出来的流量只能在发送队列里排队，到端被接收端的
+/// 抖动估计器读成大抖动，实测把播放缓冲推到 1008ms（体感延迟约 1 秒，而显示 RTT 只有
+/// 100ms：RTT 量的是空载往返，量不到发送队列里的滞留）。降到 10 Mbps 后 1080p 桌面
+/// 画面观感几乎无损，排队却消失了。
+///
+/// 局域网直连等带宽充足的场景不必重新编译，设环境变量即可调回高码率：
+///   MAKURIS_BITRATE_BPS=26000000
+const DEFAULT_BITRATE_BPS: i32 = 10_000_000;
+
+/// 本次进程的目标码率：`MAKURIS_BITRATE_BPS` 优先，取值非法时回落到默认值。
+fn bitrate_bps() -> i32 {
+    std::env::var("MAKURIS_BITRATE_BPS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_BITRATE_BPS)
+}
 
 /// 探测本机编码器在当前分辨率下实际输出的 profile-level-id。
 /// SDP 必须声明这个真实值——声明与编码器实际 SPS 不符时，部分解码端会直接黑屏，
@@ -91,7 +108,7 @@ const BITRATE_BPS: i32 = 26_000_000;
 pub fn probe_profile_level_id(width: usize, height: usize) -> String {
     #[cfg(target_os = "macos")]
     {
-        match crate::encode::pipeline::probe_profile_level_id(width, height, FPS as u32, BITRATE_BPS)
+        match crate::encode::pipeline::probe_profile_level_id(width, height, FPS as u32, bitrate_bps())
         {
             Ok(id) => {
                 tracing::info!("[session] 编码器真实 profile-level-id = {}", id);
@@ -392,9 +409,28 @@ pub async fn run_session(
     let mut remote_description_set = false;
     let mut frame_idx: u64 = 0;
     let mut buf = vec![0u8; 2000];
-    let mut ticker = tokio::time::interval(FRAME_DURATION);
+    // 取帧的轮询节拍单独用 8ms，而不是整帧的 33ms。
+    //
+    // 为什么必须比帧周期细：采集节拍由采集线程决定，实测在 26~36ms 之间浮动，与 33ms
+    // 的整帧节拍并不同步。用整帧节拍轮询、且取不到帧就 continue 跳过整个周期时，某些帧
+    // 会被整整推迟 33ms，紧跟其后的帧几乎同时发出——接收端量到的帧到达间隔因此呈
+    // 0ms / 66ms 的双峰。libwebrtc 的 JitterEstimator 正是吃这个到达间隔来估抖动的，
+    // 它会把这层纯属人为的量化误差当成链路抖动，从而把播放缓冲的目标延迟一路抬高
+    // （蜂窝实测 1008ms，而链路本身 RTT 只有约 100ms）。节拍降到 8ms 后，这一项误差
+    // 从 ±33ms 收到 ±8ms，抖动估计不再被放大。
+    //
+    // 注意 samples_per_frame 与 pacing 的单帧上限仍按 FRAME_DURATION（真实帧周期）计算，
+    // 不能跟着一起缩小，否则 RTP 时间戳步长与 pacing 的封顶值都会错。
+    let mut ticker = tokio::time::interval(Duration::from_millis(8));
     let samples_per_frame = (FRAME_DURATION.as_secs_f64() * CLOCK_RATE as f64) as u32;
+    // 目标视频码率：会话建立时读一次（MAKURIS_BITRATE_BPS 可覆盖默认值）。
+    // 两个用途：macOS 侧创建硬编时作目标码率；发送侧算 pacing 时间点。
+    let target_bitrate = bitrate_bps();
     let mut injector = crate::input::create_injector();
+    // 码率自适应：起始档就是会话建立时读到的目标码率（MAKURIS_BITRATE_BPS 或默认），
+    // 之后由控制端每秒回传的丢包率驱动升/降。判据、步长、静默期为什么这么定，
+    // 全部写在 netadapt 模块的文档注释里（那里也记着蜂窝实测的数据）。
+    let mut adapt = crate::netadapt::BitrateController::new(target_bitrate);
 
     // 采集+硬编流水线：采集与编码分两条线程，用 surface 池传递所有权让两者重叠执行。
     // 2x 分辨率下两者串行要 42ms（只剩 24fps，且毫无余量）；重叠后节拍由较慢的
@@ -408,11 +444,11 @@ pub async fn run_session(
         width,
         height,
         FPS,
-        BITRATE_BPS,
+        target_bitrate,
         Some(profile_level_id.clone()),
     )?;
     #[cfg(not(target_os = "macos"))]
-    let mut pipeline = crate::encode::source::spawn(width, height, FPS)?;
+    let mut pipeline = crate::encode::source::spawn(width, height, FPS, target_bitrate)?;
 
     'event_loop: loop {
         // 出站数据包：选中 relay 对时 poll_write 的 local_addr 是 relay 地址
@@ -446,7 +482,27 @@ pub async fn run_session(
                             }
                         }
                     }
-                    Err(e) => tracing::warn!("[session] 输入事件解析失败: {} ({})", e, text),
+                    // 不是输入事件，那它可能是控制端每秒回传的链路质量（NetReport）。
+                    // 这样安排的理由：正常路径（输入事件，每秒几十条）保持零额外开销，
+                    // 只有真解析失败的报文才多花一次尝试；而且协议升级不需要新通道，
+                    // 老被控端收到未知 JSON 也只是打条警告，不会把连接弄断。
+                    Err(e) => match serde_json::from_str::<NetReport>(&text) {
+                        Ok(rep) => {
+                            if let Some(new_bps) = adapt.on_report(rep.loss, Instant::now()) {
+                                tracing::info!(
+                                    "[netadapt] 丢包 {:.1}%（rtt {:.0}ms 抖动 {:.0}ms）→ 目标码率切到 {} bps",
+                                    rep.loss * 100.0,
+                                    rep.rtt_ms,
+                                    rep.jitter_ms,
+                                    new_bps
+                                );
+                                pipeline.set_bitrate(new_bps);
+                            }
+                        }
+                        Err(_) => {
+                            tracing::warn!("[session] 输入事件解析失败: {} ({})", e, text)
+                        }
+                    },
                 }
             }
         }
@@ -719,6 +775,19 @@ pub async fn run_session(
                 };
                 if !data.is_empty() {
                     let packets = packetizer.packetize(Instant::now(), &data, samples_per_frame)?;
+                    // 发送节奏（pacing）：把这一帧的 RTP 包按目标码率摊开来发。
+                    //
+                    // 为什么必须做：整帧约 40KB（10 Mbps / 30fps）若在一个 tick 内连续灌出，
+                    // 瞬时速率可达链路容量的数十倍，蜂窝上行或中继出口的队列会被瞬间填满
+                    // ——排队时间随即被接收端的抖动估计器读成抖动，进而抬高播放缓冲（实测
+                    // 曾达 1008ms）。这里按累计字节数推算每个包的「应发时刻」并等待，把速率
+                    // 压平到目标码率附近。
+                    //
+                    // 单帧等待上限取一个帧周期：关键帧体积是普通帧的数倍，不限的话会把发送
+                    // 循环拖住整帧都发不完。等待期间 select! 仍会继续轮询其他分支（PC 事件、
+                    // 超时），不会误事。
+                    let pacing_start = Instant::now();
+                    let mut sent_bytes: u64 = 0;
                     for mut packet in packets {
                         if let Some(mut sender) = pc.rtp_sender(sender_id) {
                             packet.header.ssrc = sender.track().ssrcs().last().unwrap_or(SSRC);
@@ -729,10 +798,20 @@ pub async fn run_session(
                                 .first()
                                 .map(|c| c.payload_type)
                                 .unwrap_or(PAYLOAD_TYPE);
+                            let len = packet.payload.len() as u64;
                             if let Err(e) = sender.write_rtp(Instant::now(), packet) {
                                 if e != Error::ErrClosedPipe {
                                     tracing::warn!("[session] write_rtp error: {}", e);
                                 }
+                            }
+                            sent_bytes += len;
+                            let due = Duration::from_secs_f64(
+                                sent_bytes as f64 * 8.0 / target_bitrate as f64,
+                            )
+                            .min(FRAME_DURATION);
+                            let elapsed = pacing_start.elapsed();
+                            if due > elapsed {
+                                tokio::time::sleep(due - elapsed).await;
                             }
                         }
                     }

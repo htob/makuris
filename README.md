@@ -111,7 +111,19 @@ Grant permissions on first run:
 
 ### 2. Local network connection (zero configuration)
 
-Put the phone and the computer on the same Wi-Fi and open the app; the "Local Network" channel on the home screen lists the computer automatically, and tapping it opens the screen.
+Put the phone and the computer on the same Wi-Fi and open the app; the "Local Network" channel on the home screen lists the computer automatically.
+
+The first time you tap a computer, the app asks for a pairing code and opens the screen only after the code checks out. Later connections from the same device skip this step.
+
+#### Where to find the pairing code
+
+The host runs as a background process, so there is no main window to look at. Depending on how you installed it, the code is in one of these places:
+
+- **Menu bar (macOS) / system tray (Windows)** — a helper keeps the current code on display, which is the quickest way to read it. This needs the packaged form: the menu bar helper ships inside `Makuris.app`, and the tray helper is `makuris-tray.ps1` next to the executable. A bare `cargo run` has neither, so fall back to the two options below.
+- **The code file** — `pairing-code.txt` in the state directory: `~/Library/Application Support/Makuris/` on macOS, `%LOCALAPPDATA%\Makuris\` on Windows.
+- **The host log** — the host prints the code together with the path to that file at startup.
+
+The code is 6 digits and rotates every 5 minutes, so read it shortly before typing it. Set `MAKURIS_PAIRING_CODE` to pin a fixed code if a rotating one is inconvenient.
 
 ### 3. Cross-network connection
 

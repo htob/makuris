@@ -35,6 +35,30 @@ extension SessionStats {
     var resolutionText: String {
         resolution ?? "—"
     }
+
+    /// 诊断行：把「网络 RTT 之外还白等了多少」如实摆出来。
+    ///
+    /// 为「显示延迟 100ms、体感却有 1 秒」加的探针：抖动缓冲是那笔差额最可能
+    /// 的藏身处，先把它量出来再决定砍哪里，避免凭印象优化。两项都取不到时
+    /// 返回 nil，界面直接不显示这一行，不留空壳。
+    var diagnosticText: String? {
+        var first: [String] = []
+        if let jb = jitterBufferMs { first.append("缓冲 \(Int(jb.rounded()))ms") }
+        if let d = decodeMs { first.append("解码 \(Int(d.rounded()))ms") }
+
+        // 第二行专测「抗丢包」这条路：丢包数 / 请求重传次数 / 实收重传包 / 抖动估计。
+        // 重传长期为 0 而 NACK 很高，就说明请求发出去了却没有补包回来（缺 RTX）。
+        var second: [String] = []
+        if let lost = packetsLost { second.append("丢包 \(Int(lost.rounded()))") }
+        if let nack = nackCount { second.append("NACK \(Int(nack.rounded()))") }
+        if let rtx = retransmittedPacketsReceived { second.append("重传 \(Int(rtx.rounded()))") }
+        if let jit = jitterMs { second.append("抖动 \(Int(jit.rounded()))ms") }
+
+        let lines = [first, second]
+            .filter { !$0.isEmpty }
+            .map { $0.joined(separator: " · ") }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
 }
 
 /// 状态条摆位：算出视频黑边有多厚，决定状态条放哪、多大。
@@ -250,6 +274,15 @@ struct SessionStatusBar: View {
                     gridLine(vertical: true)
                     metricCell(l10n.t(.metricResolution), stats.resolutionText)
                 }
+            }
+            // 诊断行（临时探针）：抖动缓冲 + 解码耗时。
+            //
+            // 「显示 100ms、体感 1 秒」的差额最可能藏在抖动缓冲里，这一行就是
+            // 用来量它的——量清楚才知道该砍哪里。取不到数据时整行不显示。
+            if let diag = stats.diagnosticText {
+                Text(diag)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundColor(ink.opacity(0.5))
             }
         }
     }

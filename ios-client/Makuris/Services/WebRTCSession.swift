@@ -14,6 +14,31 @@ struct SessionStats: Equatable {
     var bitrateMbps: Double?
     /// 远端画面分辨率（如 3024×1964）
     var resolution: String?
+    /// 接收端抖动缓冲的平均延迟（毫秒）。
+    ///
+    /// 诊断用：这是「画面比实际发生晚多久」里最大的一块，且是网络 RTT 之外
+    /// 的额外等待。用户反馈「显示延迟 100ms，体感却有 1 秒」，差额主要就藏在
+    /// 这个数里。做法是 jitterBufferDelay（累计缓冲秒数）÷ jitterBufferEmittedCount
+    /// （累计出队帧数），即每帧在缓冲里平均停留多久。
+    var jitterBufferMs: Double?
+    /// 平均单帧解码耗时（毫秒），同样只作诊断。
+    var decodeMs: Double?
+
+    // MARK: - 抗丢包诊断（临时探针）
+
+    /// 抖动缓冲为什么能顶到约 1 秒，只有两类可能：链路本身在丢包/抖动，或者
+    /// 「SDP 协商了 nack，但没有可用的重传通道」——接收端一直在等补包，只能靠
+    /// 加大缓冲硬扛。以下四项就是用来区分这两类原因的。
+    ///
+    /// 全部取自 inbound-rtp，都是累计值，直接读当前值即可，不需要差分。
+    /// 判读方式：nackCount 高而 retransmittedPacketsReceived 长期为 0，
+    /// 说明重传请求发出去了却拿不到补包（缺 RTX 的典型表现）；
+    /// packetsLost 与 nackCount 都接近 0 而 jitterMs 很大，则是链路抖动本身。
+    var packetsLost: Double?
+    var nackCount: Double?
+    var retransmittedPacketsReceived: Double?
+    /// 接收端统计的网络抖动估计；inbound-rtp 的 jitter 字段单位是秒，这里换算成毫秒。
+    var jitterMs: Double?
 
     static let empty = SessionStats()
 }
@@ -60,6 +85,15 @@ class WebRTCSession: NSObject, ObservableObject {
     /// 输入事件 DataChannel
     private var dataChannel: RTCDataChannel?
 
+    // MARK: - 链路质量上报（自适应码率的输入）
+
+    /// 上一轮统计里的累计丢包数 / 累计收包数，用于差分算「本轮丢包率」。
+    private var lastPacketsLost: Double?
+    private var lastPacketsReceived: Double?
+
+    /// 最近一轮算出的丢包率（0.0~1.0），随每秒轮询回传给被控端。
+    private var pendingLoss: Double = 0
+
     private var peerConnection: RTCPeerConnection?
     private let factory: RTCPeerConnectionFactory
     private var signalingClient: SignalingClient?
@@ -72,10 +106,16 @@ class WebRTCSession: NSObject, ObservableObject {
     /// （statistics 只给累计值，必须自己差分）
     private var lastBytesReceived: Double?
     private var lastBytesSampleTime: Date?
-    /// 上一轮累计解码帧数与时间戳（部分 libwebrtc 版本不直接给 fps，
-    /// 只能靠差分算）
+    /// 上一轮累计解码帧数与采样时刻（部分 libwebrtc 版本不直接给 fps，
+    /// 只能靠差分算）。
+    ///
+    /// 采样时刻必须用本机 Date()：libwebrtc 154 的 statistics values 里
+    /// 没有 timestamp 这个键，拿它做差分永远进不去兜底分支（旧实现即栽在此）。
     private var lastFramesDecoded: Double?
-    private var lastFramesTimestamp: Double?
+    private var lastFramesSampleTime: Date?
+    /// 上一轮累计的抖动缓冲总时长与出队帧数（诊断用，同为累计值，只能差分）
+    private var lastJitterBufferDelay: Double?
+    private var lastJitterBufferCount: Double?
     /// 最近一次已知分辨率。inbound-rtp 有时不报 frameWidth/frameHeight，
     /// 记住上次的值好过让指标整块变空。
     private var lastKnownResolution: String?
@@ -154,6 +194,33 @@ class WebRTCSession: NSObject, ObservableObject {
         channel.sendData(buffer)
     }
 
+    /// 把这一秒的链路质量回传给被控端，驱动它的自适应码率。
+    ///
+    /// 为什么必须由接收端上报：host 侧虽然协商了 transport-cc，但没装发送端拥塞
+    /// 控制（configure_congestion_control 未被调用），它无从知道链路真实容量；
+    /// 而丢包率只有接收端能精确统计。每秒一条，与输入事件共用同一条 DataChannel：
+    /// 老被控端收到这条未知 JSON 只会打条警告，不会断流。
+    ///
+    /// 字段名必须与 proto 的 NetReport 对齐（loss / rtt_ms / jitter_ms），
+    /// 名字对不上 host 就解析不出来，码率永远不会动。
+    private func reportLinkQuality(rttMs: Double?, jitterMs: Double?) {
+        guard let channel = dataChannel, channel.readyState == .open else { return }
+        let payload: [String: Double] = [
+            "loss": pendingLoss,
+            "rtt_ms": rttMs ?? 0,
+            "jitter_ms": jitterMs ?? 0,
+        ]
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        channel.sendData(RTCDataBuffer(data: data, isBinary: false))
+        // 只在需要降码率的量级才打日志，否则每秒一条会把日志刷满。
+        if pendingLoss > 0.03 {
+            print(String(
+                format: "[netadapt] 上报丢包 %.1f%%（rtt %.0fms 抖动 %.0fms）",
+                pendingLoss * 100, rttMs ?? 0, jitterMs ?? 0
+            ))
+        }
+    }
+
     /// 断开连接
     func disconnect() {
         peerConnection?.close()
@@ -180,6 +247,11 @@ class WebRTCSession: NSObject, ObservableObject {
         statsTimer = nil
         lastBytesReceived = nil
         lastBytesSampleTime = nil
+        // 丢包率的差分基准也必须清：新会话里被控端的累计计数是从 0 重来的，
+        // 留着旧基准会在下一轮算出巨大的负差分，回传一个凭空的丢包率。
+        lastPacketsLost = nil
+        lastPacketsReceived = nil
+        pendingLoss = 0
         dataChannel?.close()
         dataChannel = nil
         peerConnection?.close()
@@ -201,7 +273,13 @@ class WebRTCSession: NSObject, ObservableObject {
         lastBytesReceived = nil
         lastBytesSampleTime = nil
         lastFramesDecoded = nil
-        lastFramesTimestamp = nil
+        lastFramesSampleTime = nil
+        lastJitterBufferDelay = nil
+        lastJitterBufferCount = nil
+        // 丢包率差分基准同样清空：新会话的累计计数从 0 起算。
+        lastPacketsLost = nil
+        lastPacketsReceived = nil
+        pendingLoss = 0
         // 首轮先取一次：否则要等满 1 秒才出现数据，刚进画面那几秒是空白
         pollStats()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -211,8 +289,10 @@ class WebRTCSession: NSObject, ObservableObject {
 
     /// 从 WebRTC statistics 里取延迟、帧率、码率、分辨率。
     ///
-    /// 这里做的是「尽量取，取不到就留空」：不同版本的 libwebrtc 字段名有差异，
-    /// 某项取不到时显示「—」即可，不必让整块指标消失，更不该崩掉。
+    /// 策略是「尽力而为 + 沿用上次」：不同版本的 libwebrtc 字段名有差异，某项
+    /// 这一轮取不到（ICE 重协商、该轮报告里没有对应条目）时，保留上一次的值
+    /// 继续显示，而不是闪成「—」——指标闪空会被读成「画面卡死了」，比数字
+    /// 略旧更糟。只有整个会话重建（stats 被置回 .empty）时才会真正清空。
     private func pollStats() {
         guard let pc = peerConnection else { return }
         pc.statistics { [weak self] report in
@@ -230,15 +310,27 @@ class WebRTCSession: NSObject, ObservableObject {
             for (_, entry) in report.statistics {
                 switch entry.type {
                 case "candidate-pair":
-                    // 只在被选中（正在使用）的候选对上取 RTT，
-                    // 否则会把未使用路径的 0 值读成「零延迟」
-                    let isSelected = (entry.values["selected"] as? Bool) ?? false
-                    let stateOk = (entry.values["state"] as? String) == "succeeded"
-                    let nominated = (entry.values["nominated"] as? Bool) ?? false
-                    if (isSelected || nominated) && stateOk {
-                        if let rtt = entry.values["currentRoundTripTime"] as? Double {
-                            new.rttMs = rtt * 1000.0
-                        }
+                    // 取 RTT 的两道保险。
+                    //
+                    // 旧实现要求「selected/nominated + state == succeeded」同时成立，
+                    // 卡得太死：ICE 重协商、切换网络、刚建连的那一两秒里，state 会
+                    // 短暂离开 succeeded，于是延迟闪成「—」。
+                    //
+                    // 现在改为：只要拿得到正的 RTT 就先用着，正在使用的那条候选对
+                    // 优先级最高——旧注释担心的「读到未使用路径的 0 值」，改用
+                    // 「必须为正数」来兜住，而不是靠 state 字符串卡。
+                    let inUse = self.flag(entry.values["selected"])
+                        || self.flag(entry.values["nominated"])
+                    var rttSeconds: Double?
+                    if let current = self.positiveNumber(entry.values["currentRoundTripTime"]) {
+                        rttSeconds = current
+                    } else if let total = self.positiveNumber(entry.values["totalRoundTripTime"]),
+                              let responses = self.positiveNumber(entry.values["responsesReceived"]) {
+                        // 兜底：有的版本只报累计 RTT 与响应次数，相除即平均延迟
+                        rttSeconds = total / responses
+                    }
+                    if let rtt = rttSeconds, inUse || new.rttMs == nil {
+                        new.rttMs = rtt * 1000.0
                     }
 
                 case "inbound-rtp":
@@ -246,20 +338,26 @@ class WebRTCSession: NSObject, ObservableObject {
                     if let kind = entry.values["kind"] as? String, kind != "video" { continue }
                     if let mediaType = entry.values["mediaType"] as? String, mediaType != "video" { continue }
 
-                    if let fps = entry.values["framesPerSecond"] as? Double {
+                    if let fps = self.number(entry.values["framesPerSecond"]), fps > 0 {
                         new.fps = fps
-                    } else if let frames = entry.values["framesDecoded"] as? Double,
-                              let ts = entry.values["timestamp"] as? Double,
-                              let lastTs = self.lastFramesTimestamp,
-                              let lastFrames = self.lastFramesDecoded,
-                              ts > lastTs {
-                        // 没有现成 fps 字段时，用累计解码帧数差分算
-                        let delta = frames - lastFrames
-                        let seconds = (ts - lastTs) / 1000.0
-                        if seconds > 0.2 { new.fps = max(0, delta / seconds) }
+                    } else if let frames = self.number(entry.values["framesDecoded"]) {
+                        // 兜底：用累计解码帧数差分算。
+                        //
+                        // 时间基准必须取本机 Date()——libwebrtc 154 的 values 里
+                        // 压根没有 "timestamp" 这个键，旧实现拿它做差分永远进不来，
+                        // 于是只要 framesPerSecond 缺一轮（该轮没有 inbound-rtp 条目、
+                        // 解码短暂停顿），帧率就闪成「—」。
+                        let now = Date()
+                        if let lastFrames = self.lastFramesDecoded,
+                           let lastTime = self.lastFramesSampleTime {
+                            let seconds = now.timeIntervalSince(lastTime)
+                            if seconds > 0.2 {
+                                new.fps = max(0, (frames - lastFrames) / seconds)
+                            }
+                        }
+                        self.lastFramesDecoded = frames
+                        self.lastFramesSampleTime = now
                     }
-                    self.lastFramesDecoded = entry.values["framesDecoded"] as? Double
-                    self.lastFramesTimestamp = entry.values["timestamp"] as? Double
 
                     // 解码统计只作诊断，不再用来撤遮罩。
                     //
@@ -287,6 +385,71 @@ class WebRTCSession: NSObject, ObservableObject {
                         self.lastBytesSampleTime = now
                     }
 
+                    // 抖动缓冲延迟：每帧在接收缓冲里平均停留多久。
+                    //
+                    // 这是「RTT 之外白等的时间」，也是「显示 100ms、体感 1 秒」
+                    // 最可能的藏身处。两个字段都是累计值，差分才反映当前网络下
+                    // 的真实缓冲（直接相除得到的是开机以来的历史均值，会把早期
+                    // 网络差时的缓冲一直拖着，看不出改善）。
+                    if let jbDelay = self.number(entry.values["jitterBufferDelay"]),
+                       let jbCount = self.number(entry.values["jitterBufferEmittedCount"]) {
+                        if let lastDelay = self.lastJitterBufferDelay,
+                           let lastCount = self.lastJitterBufferCount,
+                           jbCount > lastCount {
+                            let frames = jbCount - lastCount
+                            let seconds = jbDelay - lastDelay
+                            if seconds >= 0 && frames > 0 {
+                                new.jitterBufferMs = seconds / frames * 1000.0
+                            }
+                        }
+                        self.lastJitterBufferDelay = jbDelay
+                        self.lastJitterBufferCount = jbCount
+                    }
+
+                    // 平均单帧解码耗时（累计解码时间 ÷ 累计帧数），诊断用。
+                    if let totalDecode = self.number(entry.values["totalDecodeTime"]),
+                       let decoded = self.number(entry.values["framesDecoded"]),
+                       decoded > 0 {
+                        new.decodeMs = totalDecode / decoded * 1000.0
+                    }
+
+                    // 抗丢包诊断：丢包 / NACK / 实收重传 / 抖动估计。
+                    //
+                    // 用来回答一个此前只能靠猜的问题——1 秒的缓冲究竟是「链路在丢包」
+                    // 还是「请求了重传却拿不到补包」。四个都是累计值，直读即可。
+                    // jitter 字段单位是秒（RFC 3550 的到达间隔抖动估计），换成毫秒更好读。
+                    new.packetsLost = self.number(entry.values["packetsLost"])
+                    new.nackCount = self.number(entry.values["nackCount"])
+
+                    // 这一秒的丢包率（自适应码率的唯一输入）。
+                    //
+                    // 为什么由接收端算：host 侧没装发送端拥塞控制，它根本不知道
+                    // 链路实际能跑多少；而丢包率只有接收端能精确统计。
+                    //
+                    // 必须用差分，不能「累计丢包 ÷ 累计总量」：累计值从会话建立起算，
+                    // 早期链路差的那一段会一直拖着，网络恢复后码率也升不回去。
+                    // 分母取「本轮新增丢包 + 本轮新增收包」，即这一秒链路上真正发出的包。
+                    if let lost = new.packetsLost,
+                       let recv = self.number(entry.values["packetsReceived"]) {
+                        if let lastLost = self.lastPacketsLost,
+                           let lastRecv = self.lastPacketsReceived {
+                            let dLost = lost - lastLost
+                            let dRecv = recv - lastRecv
+                            let total = dLost + dRecv
+                            if total > 0 {
+                                // 夹在 0~1：重传补包会让 dRecv 涨得比 dLost 快，dLost 偶发为负。
+                                self.pendingLoss = min(1.0, max(0.0, dLost / total))
+                            }
+                        }
+                        self.lastPacketsLost = lost
+                        self.lastPacketsReceived = recv
+                    }
+                    new.retransmittedPacketsReceived =
+                        self.number(entry.values["retransmittedPacketsReceived"])
+                    if let jitterSeconds = self.number(entry.values["jitter"]) {
+                        new.jitterMs = jitterSeconds * 1000.0
+                    }
+
                     if let w = entry.values["frameWidth"] as? Double,
                        let h = entry.values["frameHeight"] as? Double,
                        w > 0, h > 0 {
@@ -299,8 +462,63 @@ class WebRTCSession: NSObject, ObservableObject {
                 }
             }
 
-            DispatchQueue.main.async { self.stats = new }
+            DispatchQueue.main.async {
+                // 本轮取不到的项沿用上一次的值，而不是显示「—」。
+                //
+                // 指标是每秒一张快照，任何一项当轮取不到就闪成「—」，用户会读成
+                // 「画面卡死了」；而真实原因往往只是这一秒没采样到（ICE 重协商、
+                // 该轮报告里没有对应条目），下一轮就恢复了。指标本质是「当前状态
+                // 读数」，不是瞬时报警，留着上一次的值比闪空更诚实。
+                //
+                // 会话真正重建时 stats 会被置回 .empty（见 teardownPeerConnection），
+                // 所以不会把上一台电脑的数据带进新会话。
+                var merged = new
+                if merged.rttMs == nil { merged.rttMs = self.stats.rttMs }
+                if merged.fps == nil { merged.fps = self.stats.fps }
+                if merged.bitrateMbps == nil { merged.bitrateMbps = self.stats.bitrateMbps }
+                if merged.resolution == nil { merged.resolution = self.stats.resolution }
+                if merged.jitterBufferMs == nil { merged.jitterBufferMs = self.stats.jitterBufferMs }
+                if merged.decodeMs == nil { merged.decodeMs = self.stats.decodeMs }
+                if merged.packetsLost == nil { merged.packetsLost = self.stats.packetsLost }
+                if merged.nackCount == nil { merged.nackCount = self.stats.nackCount }
+                if merged.retransmittedPacketsReceived == nil {
+                    merged.retransmittedPacketsReceived = self.stats.retransmittedPacketsReceived
+                }
+                if merged.jitterMs == nil { merged.jitterMs = self.stats.jitterMs }
+                self.stats = merged
+                // 顺手把这一秒的链路质量回传给被控端——它是自适应码率的唯一输入。
+                self.reportLinkQuality(rttMs: merged.rttMs, jitterMs: merged.jitterMs)
+            }
         }
+    }
+
+    /// 从 statistics 的 values 里取数字。
+    ///
+    /// libwebrtc 的值是 NSNumber（个别字段会以字符串形式给出），直接写
+    /// `as? Double` 在部分桥接路径上会失败，统一在这里兜住，避免「字段明明
+    /// 存在、代码却取不到」这种最费解的空白。
+    private func number(_ value: Any?) -> Double? {
+        if let d = value as? Double { return d }
+        if let n = value as? NSNumber { return n.doubleValue }
+        if let s = value as? String { return Double(s) }
+        return nil
+    }
+
+    /// 同上，但只认正数：0 或负数一律视为「没有数据」。
+    ///
+    /// 用在延迟上：未使用路径的候选对 RTT 恒为 0，直接采信会显示成
+    /// 「零延迟」——这是旧代码用 state 字符串严格卡住的初衷，用「必须为正」
+    /// 同样能兜住，而且不会因为 state 短暂离开 succeeded 就把整项变成空白。
+    private func positiveNumber(_ value: Any?) -> Double? {
+        guard let v = number(value), v > 0 else { return nil }
+        return v
+    }
+
+    /// 取布尔标记（selected / nominated 这类）。
+    private func flag(_ value: Any?) -> Bool {
+        if let b = value as? Bool { return b }
+        if let n = value as? NSNumber { return n.boolValue }
+        return false
     }
 
     private func createPeerConnection() {

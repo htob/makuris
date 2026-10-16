@@ -217,7 +217,12 @@ struct ContentView: View {
             Section {
                 channelRows(channel)
             } header: {
-                channelHeader(channel.title, caption: channel.address)
+                // 自带密钥的通道标注一下。否则用户改设置里的默认密钥、发现这条
+                // 没反应，会以为设置没生效。
+                channelHeader(channel.title,
+                              caption: channel.usesOwnKey
+                                  ? "\(channel.address) · \(l10n.t(.ownAccessKeyBadge))"
+                                  : channel.address)
             }
         }
     }
@@ -513,7 +518,7 @@ struct ContentView: View {
     private func scanSavedChannels() {
         scanner.scan(store.computers,
                      deviceId: appState.deviceId,
-                     accessKey: appState.accessKey)
+                     defaultAccessKey: appState.accessKey)
     }
 
     /// 连接信令服务器；若与同一地址的连接还活着，就直接复用、不重连。
@@ -622,7 +627,7 @@ struct ContentView: View {
         // 每条通道也全部重连：它们的连接同样是半开状态
         scanner.scan(store.computers,
                      deviceId: appState.deviceId,
-                     accessKey: appState.accessKey,
+                     defaultAccessKey: appState.accessKey,
                      force: true)
     }
 
@@ -693,13 +698,14 @@ struct SettingsView: View {
                 Section {
                     // 语言切换：选中即生效。不重启 App，也不要求返回首页，
                     // 因为文案取值点都订阅了 L10nStore。
+                    //
+                    // 这里刻意不给 Section 加 header：Picker 自己的标签就是「语言」，
+                    // 再配一个分组标题会让「语言」在一行里出现两次，看着像重复渲染。
                     Picker(l10n.t(.languageSection), selection: $l10n.language) {
                         ForEach(AppLanguage.allCases) { lang in
                             Text(lang.displayName).tag(lang)
                         }
                     }
-                } header: {
-                    Text(l10n.t(.languageSection))
                 } footer: {
                     Text(l10n.t(.languageHint))
                 }
@@ -746,6 +752,8 @@ struct AddComputerView: View {
 
     @State private var name = ""
     @State private var address = ""
+    /// 这台服务器专属的接入密钥，留空则沿用设置里的默认密钥
+    @State private var accessKey = ""
 
     var body: some View {
         NavigationStack {
@@ -759,14 +767,27 @@ struct AddComputerView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .font(.system(.body, design: .monospaced))
+                    // 预览并进地址分组，不再单开一块：它只是上面那一行输入的即时结果，
+                    // 单独占一个分组会在页面上留出一段没有内容的空白。
+                    //
+                    // 值用 Text 而不是 LabeledContent 的 value 参数：地址规范化后可能
+                    // 很长（wss:// + 域名 + 端口 + 路径），value 参数会把长文本截成一行，
+                    // 这里让它右对齐、必要时换行。
+                    LabeledContent(l10n.t(.willConnect)) {
+                        Text(previewAddress)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .font(.footnote)
                 } header: {
                     Text(l10n.t(.addressLabel))
                 } footer: {
                     Text(l10n.t(.addressHint))
                 }
-                Section {
-                    LabeledContent(l10n.t(.willConnect), value: previewAddress)
-                        .font(.footnote)
+                Section(l10n.t(.accessKeyOptionalLabel)) {
+                    TextField(l10n.t(.accessKeyOptionalPlaceholder), text: $accessKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.body, design: .monospaced))
                 }
             }
             // 这一页同样用暖色纸底，跟主界面成套；锁浅色外观避免深色模式下白字
@@ -782,7 +803,7 @@ struct AddComputerView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(l10n.t(.save)) {
-                        store.add(name: name, address: address)
+                        store.add(name: name, address: address, accessKey: accessKey)
                         dismiss()
                     }
                     .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)

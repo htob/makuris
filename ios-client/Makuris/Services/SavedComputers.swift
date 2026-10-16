@@ -14,11 +14,42 @@ struct SavedComputer: Identifiable, Codable, Equatable {
     var name: String
     /// 用户填的原始地址（可能只是 IP，也可能带端口/路径）
     var address: String
+    /// 这条地址所属信令服务器的接入密钥。留空表示沿用设置里的默认密钥。
+    ///
+    /// 密钥跟着地址走，是因为两者本就是一体的：地址指向哪台服务器，密钥就是哪台
+    /// 服务器的。原先只有全局一个密钥，隐含了「只有一个信令服务器」的假设；用户加
+    /// 第二台服务器时必然冲突——改全局会把第一台弄坏，不改则第二台认证不过。所以
+    /// 每条地址各自带一份，全局那个降级为默认值。
+    var accessKey: String = ""
 
-    init(id: UUID = UUID(), name: String = "", address: String) {
+    init(id: UUID = UUID(), name: String = "", address: String, accessKey: String = "") {
         self.id = id
         self.name = name
         self.address = address
+        self.accessKey = accessKey
+    }
+
+    /// 旧版本存的数据里没有 accessKey 字段，缺字段时按「用默认密钥」处理。
+    ///
+    /// 合成的解码器遇到缺字段会直接抛错，那会让整个列表都读不出来——用户看到的是
+    /// 已保存的电脑全没了。所以这里显式用 decodeIfPresent 兜住。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        address = try c.decode(String.self, forKey: .address)
+        accessKey = try c.decodeIfPresent(String.self, forKey: .accessKey) ?? ""
+    }
+
+    /// 实际连接时该用的密钥：本条填了就用本条的，没填回退到默认值。
+    func effectiveAccessKey(fallback: String) -> String {
+        let own = accessKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return own.isEmpty ? fallback : own
+    }
+
+    /// 是否单独配了密钥（界面上据此决定要不要标注）。
+    var hasOwnAccessKey: Bool {
+        !accessKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// 界面主标题
@@ -42,14 +73,14 @@ final class SavedComputersStore: ObservableObject {
         load()
     }
 
-    func add(name: String, address: String) {
+    func add(name: String, address: String, accessKey: String = "") {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // 同一地址不重复添加，否则列表里会出现两条一模一样的
         guard !computers.contains(where: {
             $0.normalizedURL == AppState.normalize(trimmed)
         }) else { return }
-        computers.append(SavedComputer(name: name, address: trimmed))
+        computers.append(SavedComputer(name: name, address: trimmed, accessKey: accessKey))
         save()
     }
 

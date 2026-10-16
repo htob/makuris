@@ -88,6 +88,9 @@ enum L10n {
         case addressHint
         case willConnect
         case invalidAddress
+        case accessKeyOptionalLabel
+        case accessKeyOptionalPlaceholder
+        case ownAccessKeyBadge
 
         // 设置页
         case settingsTitle
@@ -153,8 +156,8 @@ enum L10n {
         .languageSection: ("语言", "Language"),
         .languageFollowSystem: ("跟随系统", "Follow System"),
         .languageHint: (
-            "切换后界面立即生效，无需重启。系统权限弹窗（如本地网络）跟随手机系统语言，不受这里影响。",
-            "The interface updates immediately, no restart needed. System permission prompts (such as Local Network) follow the phone's system language and are not affected by this setting."
+            "切换后立即生效，无需重启。",
+            "Takes effect immediately, no restart needed."
         ),
 
         // 首页
@@ -182,27 +185,33 @@ enum L10n {
         .namePlaceholder: ("家里的 Mac", "Home Mac"),
         .addressLabel: ("地址", "Address"),
         .addressHint: (
-            "只填 IP 即可，端口与路径会自动补全。不在同一 Wi-Fi 时填这台电脑可被访问的地址。",
-            "Just the IP is enough — the port and path are filled in automatically. When you're not on the same Wi-Fi, enter the address this computer can be reached at."
+            "只填 IP 即可，端口与路径自动补全。",
+            "An IP is enough — port and path are filled in automatically."
         ),
         .willConnect: ("将连接", "Will connect to"),
         .invalidAddress: ("地址无效", "Invalid address"),
+        .accessKeyOptionalLabel: ("接入密钥（可选）", "Access Key (optional)"),
+        .accessKeyOptionalPlaceholder: (
+            "留空则用默认密钥",
+            "Leave empty to use the default key"
+        ),
+        .ownAccessKeyBadge: ("专用密钥", "own key"),
 
         // 设置页
         .settingsTitle: ("设置", "Settings"),
-        .signalingAccessKey: ("信令接入密钥", "Signaling Access Key"),
+        .signalingAccessKey: ("默认接入密钥", "Default Access Key"),
         .accessKeyPlaceholder: (
-            "留空表示服务器未启用鉴权",
-            "Leave empty if the server requires no key"
+            "服务器无密钥则留空",
+            "Leave empty if the server has no key"
         ),
         .accessKeyHint: (
-            "只有通过中心服务器连接时才需要。密钥在电脑端启动信令服务器时打印在日志里，两端填同一串。同一 Wi-Fi 下直接发现的电脑不走服务器，无需填写。",
-            "Only needed when connecting through the central server. The key is printed in the log when the computer starts the signaling server; both ends must use the same string. Computers found directly on the same Wi-Fi don't go through the server, so leave it empty."
+            "两端填同一串。这里是默认值，单条地址可单独覆盖。",
+            "Both ends use the same string. This is the default; any address can override it."
         ),
         .deviceIdLabel: ("本机标识", "This Device ID"),
         .deviceIdHint: (
-            "电脑端会看到这个标识，用于区分是哪台手机在连接。",
-            "The computer sees this ID to tell which phone is connecting."
+            "电脑端用它区分是哪台手机。",
+            "The computer uses this to tell which phone is connecting."
         ),
 
         // 信令状态与连接错误

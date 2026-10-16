@@ -33,9 +33,24 @@ final class ChannelScanner: ObservableObject {
         /// 展示用的原始地址
         let address: String
         var state: ChannelScanState
+        /// 实际连接这条通道所用的密钥。
+        ///
+        /// 与 SavedComputer.accessKey 不同：那个是用户填的原始值（可能为空），
+        /// 这个是回退过默认值之后的最终值。要比较「密钥变了吗」只能用最终值，
+        /// 拿原始值比会把「空 vs 默认值」误判成变了、白白重建连接。
+        let accessKey: String
+        /// 这条地址是否自带密钥。界面据此标注，免得用户以为改设置里的默认值
+        /// 也能影响它。
+        let usesOwnKey: Bool
     }
 
     @Published private(set) var channels: [Channel] = []
+
+    /// 本轮扫描的默认密钥：地址没自带密钥时回退到它。
+    ///
+    /// 存成实例属性而不是层层传参，是为了让 apply 构造通道时也能取到同一个
+    /// 口径——否则界面上标注的密钥和实际连接用的密钥会是两个来源，早晚对不上。
+    private var defaultAccessKey = ""
 
     /// 每条通道的探测客户端，按通道 id 存
     private var clients: [UUID: SignalingClient] = [:]
@@ -53,7 +68,11 @@ final class ChannelScanner: ObservableObject {
     ///
     /// 同一条地址已经在扫、或已经扫出结果时不重建连接：下拉刷新一次就把所有连接
     /// 拆掉重来，既慢，又会让整个列表闪一下。
-    func scan(_ saved: [SavedComputer], deviceId: String, accessKey: String, force: Bool = false) {
+    func scan(_ saved: [SavedComputer], deviceId: String, defaultAccessKey: String, force: Bool = false) {
+        // 每条地址可以自带密钥，没带的回退到这个默认值。存成实例属性，是为了让
+        // apply 构造通道时也取同一个口径——否则界面上标注的密钥和实际连接用的
+        // 密钥会是两个来源，早晚对不上。
+        self.defaultAccessKey = defaultAccessKey
         // 用户删掉的地址：连同它的连接一起收掉
         let alive = Set(saved.map(\.id))
         for id in clients.keys where !alive.contains(id) {
@@ -75,6 +94,9 @@ final class ChannelScanner: ObservableObject {
             if !force,
                let known = channels.first(where: { $0.id == item.id }),
                known.address == item.address,
+               // 密钥也算「配置改过」：改过密钥的通道必须重建，否则新密钥永远
+               // 不生效——连接还是旧的，界面还显示连得好好的，最难查的就是这种。
+               known.accessKey == item.effectiveAccessKey(fallback: defaultAccessKey),
                isAlive(item.id) {
                 // 连接还在，只有名字可能被改过
                 apply(known.state, for: item, address: item.address)
@@ -86,7 +108,10 @@ final class ChannelScanner: ObservableObject {
                     clients[item.id]?.refreshDeviceList()
                 }
             } else {
-                start(item, address: address, deviceId: deviceId, accessKey: accessKey)
+                // 这条地址自带密钥就用它自己的，没带才回退到默认值：不同信令
+                // 服务器各有各的密钥，共用一个必然互相打架。
+                start(item, address: address, deviceId: deviceId,
+                      accessKey: item.effectiveAccessKey(fallback: defaultAccessKey))
             }
         }
 
@@ -154,7 +179,12 @@ final class ChannelScanner: ObservableObject {
     }
 
     private func apply(_ state: ChannelScanState, for item: SavedComputer, address: String) {
-        let channel = Channel(id: item.id, title: item.displayName, address: address, state: state)
+        let channel = Channel(id: item.id,
+                              title: item.displayName,
+                              address: address,
+                              state: state,
+                              accessKey: item.effectiveAccessKey(fallback: defaultAccessKey),
+                              usesOwnKey: item.hasOwnAccessKey)
         if let i = channels.firstIndex(where: { $0.id == item.id }) {
             channels[i] = channel
         } else {

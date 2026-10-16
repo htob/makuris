@@ -68,3 +68,26 @@ Windows 侧路径统一改为 `%USERPROFILE%` / `$env:USERPROFILE`，既不带�
 - 时效凭证到期/重连时重新获取（host 长驻进程需在断线重连后随注册重新拿凭证；会话中途过期暂不刷新，单会话时长通常小于 TTL）。
 - iOS 侧 TURN 因框架丢凭证本就不生效（媒体靠 host 侧 relay），下发凭证对 iOS 仅为配置完整性。
 - README 增加第三方许可章节（WebRTC BSD-3、rustls ISC/Apache 等）。
+
+
+## 2026-10-16 推送前复核（含自适应码率等 6 个提交）
+
+背景：本轮新增自适应码率、iOS 链路质量上报、非 macOS 软编换档、单地址自带密钥、README 配对码章节等改动，
+推送前对**全部 26 个提交**与当前工作区重做一次完整复查。
+
+方法：对 `git rev-list --all` 覆盖的每个提交（含已删除文件的 blob）与工作区已跟踪文件，扫描公网/内网 IP、
+邮箱、家目录路径（macOS 与 Windows 两种形态）、Apple Team ID、证书指纹、设备 UDID、云实例 ID、
+私钥与凭证字面量；并逐一核对 26 个提交的作者与提交者身份。
+
+结论：**无新增泄露，可安全推送。**
+
+- 真实公网 IP、内网 IP、SSH 用户名与本地路径仅存在于 `scripts/.deploy.env`（已被 `.gitignore` 排除，
+  且从未被提交）；已跟踪文件与全部历史中均无一命中。
+- 26 个提交的作者与提交者均为脱敏身份，提交信息不含个人信息与内部路径。
+- 凭证字面量仅命中占位符（`CHANGE_ME_TURN_SECRET`）与说明性注释，无真实值。
+- 品牌图与图标无作者/GPS 等元数据。
+- 文档与源码中的 IP 均为 RFC 5737 文档地址段或 `192.168.1.x` 一类通用示例，属有意保留。
+
+本轮修正：`ios-client/Makuris.xcodeproj/project.pbxproj.bak`（Xcode 修改工程设置时生成的副本，
+内含 `DEVELOPMENT_TEAM`）此前未被 `.gitignore` 覆盖，仅靠「记得不要 `git add -A`」兜底。
+现已补入 `*.pbxproj.bak` 与 `*.bak`，从版本控制层面排除。

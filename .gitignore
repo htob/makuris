@@ -28,5 +28,12 @@ xcuserdata/
 # ---------- 本地部署配置（含个人网络信息：SSH 目标、局域网 IP、用户名）----------
 scripts/.deploy.env
 
+# ---------- 本机临时/备份文件 ----------
+# Xcode 改工程设置时会生成 project.pbxproj.bak，里面带着 DEVELOPMENT_TEAM。
+# 这类文件是「本机顺手留下的副本」，不该进公开仓库；靠「记得别 git add -A」
+# 来兜底太脆弱，直接从版本控制里排除。
+*.pbxproj.bak
+*.bak
+
 # 注：Cargo.lock 刻意入库（二进制项目，保证用户可复现构建）。
 # 旧版 .gitignore 曾忽略它，开源前已改为提交。

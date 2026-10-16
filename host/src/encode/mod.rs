@@ -8,8 +8,9 @@
 //!
 //! 本文件同时提供平台无关的 NAL 工具函数（AVCC↔Annex-B、SPS 解析）——两条路径共用。
 use anyhow::Result;
-use openh264::encoder::Encoder;
+use openh264::encoder::{Encoder, EncoderConfig};
 use openh264::formats::{RgbSliceU8, YUVBuffer};
+use openh264::OpenH264API;
 
 #[cfg(target_os = "macos")]
 pub mod vt;
@@ -102,6 +103,17 @@ pub struct H264Encoder {
 impl H264Encoder {
     pub fn new() -> Result<Self> {
         Ok(Self { inner: Encoder::new()? })
+    }
+
+    /// 用指定目标码率新建编码器（bits/s）。
+    ///
+    /// 为什么必须有它：openh264 的码率是**构造期参数**（EncoderConfig::set_bitrate_bps），
+    /// crate 没有提供运行时 setter，所以运行中改码率只能重建编码器——与 macOS 版
+    /// 「重建 VideoToolbox 会话」是同一思路。软编重建是毫秒级动作，且新编码器首帧
+    /// 为 IDR，接收端正好借它从丢包后遗症里恢复。
+    pub fn new_with_bitrate(bps: u32) -> Result<Self> {
+        let config = EncoderConfig::new().set_bitrate_bps(bps.max(1));
+        Ok(Self { inner: Encoder::with_api_config(OpenH264API::from_source(), config)? })
     }
 
     /// 编码一帧 RGB（每像素 3 字节，行优先，宽高为偶数）。

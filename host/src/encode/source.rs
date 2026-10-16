@@ -14,6 +14,8 @@
 //! 仍保留「首帧核验 SPS 与 SDP 声明是否一致」这一步：声明与实际不符会让
 //! 部分解码端直接黑屏，而这类问题在日志里毫无痕迹，只能靠主动核对。
 
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -27,9 +29,21 @@ pub struct Pipeline {
     /// 编码后的 Annex-B 码流；接收端丢弃时流水线自动停止。
     pub frames: mpsc::Receiver<Bytes>,
     handle: Option<std::thread::JoinHandle<()>>,
+    /// 目标码率（bits/s），由会话层按链路质量改写。
+    bitrate: Arc<AtomicI32>,
 }
 
 impl Pipeline {
+    /// 请求把编码目标码率切到 `bps`（下一帧生效）。
+    ///
+    /// 与 macOS 版同一语义，但实现不同：openh264 的码率是构造期参数
+    /// （EncoderConfig::set_bitrate_bps），crate 没有运行时 setter，所以这里只写入
+    /// 目标值，由编码线程发现变化后重建编码器。用原子变量而不是 channel，是因为
+    /// 只关心「最新值」——来不及处理的中间档位没有意义。
+    pub fn set_bitrate(&self, bps: i32) {
+        self.bitrate.store(bps, Ordering::Relaxed);
+    }
+
     /// 关闭流水线并等待工作线程退出。
     pub fn shutdown(mut self) {
         // 关掉接收端，工作线程的 blocking_send 随即失败并退出
@@ -61,9 +75,11 @@ pub fn probe_profile_level_id(width: usize, height: usize) -> Result<String> {
 }
 
 /// 启动流水线：采集线程持续产出帧，编码后经 channel 送给事件循环。
-pub fn spawn(width: usize, height: usize, fps: u64) -> Result<Pipeline> {
+pub fn spawn(width: usize, height: usize, fps: u64, bitrate_bps: i32) -> Result<Pipeline> {
     let mut capturer = crate::capture::create_capturer(width as u32, height as u32);
-    let mut encoder = H264Encoder::new()?;
+    let mut encoder = H264Encoder::new_with_bitrate(bitrate_bps.max(1) as u32)?;
+    let bitrate = Arc::new(AtomicI32::new(bitrate_bps));
+    let bitrate_target = Arc::clone(&bitrate);
     let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(2);
     let frame_duration = Duration::from_millis(1000 / fps.max(1));
 
@@ -77,8 +93,28 @@ pub fn spawn(width: usize, height: usize, fps: u64) -> Result<Pipeline> {
             // 连续采集失败多少次后放弃：权限被回收或设备断开时，没必要永远空转
             const MAX_FAIL_STREAK: u32 = 300; // 约 10 秒
 
+            let mut current_bitrate = bitrate_bps;
             loop {
                 let frame_start = std::time::Instant::now();
+
+                // 码率变更：openh264 只能在构造期定码率，故按目标值重建编码器。
+                // 重建是毫秒级动作，且新编码器首帧是 IDR——接收端正好借它从丢包后的
+                // 糊屏里恢复（与 macOS 版重建硬编会话同源）。
+                let want = bitrate_target.load(Ordering::Relaxed);
+                if want != current_bitrate {
+                    match H264Encoder::new_with_bitrate(want.max(1) as u32) {
+                        Ok(enc) => {
+                            encoder = enc;
+                            current_bitrate = want;
+                            tracing::info!("[netadapt] 软编目标码率切到 {} bps", want);
+                        }
+                        Err(e) => {
+                            // 不更新 current_bitrate：下一帧会再试，避免一次偶发失败
+                            // 就让码率永久停在旧档
+                            tracing::warn!("[encode] 重建编码器失败，稍后重试: {}", e);
+                        }
+                    }
+                }
 
                 let frame = match capturer.capture_frame() {
                     Ok(f) => {
@@ -153,7 +189,7 @@ pub fn spawn(width: usize, height: usize, fps: u64) -> Result<Pipeline> {
             }
         })?;
 
-    Ok(Pipeline { frames: frame_rx, handle: Some(handle) })
+    Ok(Pipeline { frames: frame_rx, handle: Some(handle), bitrate })
 }
 
 #[cfg(test)]

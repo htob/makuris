@@ -170,6 +170,23 @@ pub fn create_offer_sdp(pc: &mut rtc::peer_connection::RTCPeerConnection) -> Res
     let local = pc
         .local_description()
         .ok_or_else(|| anyhow::anyhow!("local description missing after create_offer"))?;
+    // 把决定抗丢包能力的那几行协商结果打进日志。
+    //
+    // 背景：register_default_interceptors 会注册 NACK 应答器/生成器，并往 MediaEngine
+    // 注册 nack 反馈；但这些声明最终是否真的落到 SDP 上、RTX 有没有协商成功，此前只靠
+    // 读 SDK 源码推断。蜂窝链路必然有丢包，光靠接收端加大缓冲掩盖不了，必须先把协商
+    // 实况看清楚，否则优化方向只能靠猜。
+    for line in local.sdp.lines() {
+        let t = line.trim();
+        if t.starts_with("m=video")
+            || t.starts_with("a=rtcp-fb")
+            || t.starts_with("a=rtpmap")
+            || t.starts_with("a=fmtp")
+            || t.starts_with("a=extmap")
+        {
+            tracing::info!("[sdp] {}", t);
+        }
+    }
     Ok(local.sdp)
 }
 

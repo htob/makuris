@@ -71,8 +71,11 @@ impl VtEncoder {
             .with_real_time(true)
             .with_average_bit_rate(bitrate_bps)
             .with_expected_frame_rate(f64::from(fps))
-            // 2 秒一个关键帧，兼顾新连接快速出画与码率效率
-            .with_max_keyframe_interval((fps * 2) as i32)
+            // 1 秒一个关键帧。原为 2 秒（fps * 2），改成 1 秒是为了缩短「丢包后
+            // 画面卡住」的时长：解码端丢包后必须等下一个 IDR 才能恢复，间隔 2 秒
+            // 意味着最坏要僵住 2 秒，体感上就是「点了没反应」。代价是码率上升
+            // 约 10~15%，对交互流畅度的收益值这个价。
+            .with_max_keyframe_interval(fps as i32)
             .with_low_latency_rate_control(true)
             // 必须显式指定 Constrained Baseline：默认的无约束 High 不被 iPhone 接受（见 PROFILE_LEVEL）
             .with_profile_level(PROFILE_LEVEL)

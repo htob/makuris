@@ -147,6 +147,8 @@ cd deploy && docker compose up -d
 # 上线前务必修改 coturn 的 TURN 密钥并配置 TLS
 ```
 
+完整的自建流程见 **[deploy/SERVER.md](deploy/SERVER.md)**：TLS 自签证书怎么生成、指纹 pin 怎么同步更新、防火墙要放行哪些端口（以及哪些端口可以改、哪些必须让防火墙知道）、coturn 的时效凭证怎么配、systemd 单元怎么装。
+
 ### 4. 构建 iOS 控制端
 
 ```bash

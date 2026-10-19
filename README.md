@@ -149,6 +149,8 @@ cd deploy && docker compose up -d
 # change coturn's TURN secret and configure TLS before going live
 ```
 
+For a production walkthrough — TLS certificate generation and how to update the pinned fingerprint, firewall rules, the list of ports you can change and the ones a firewall must know about, coturn with short-lived credentials, and the systemd units — see **[deploy/SERVER.md](deploy/SERVER.md)**.
+
 ### 4. Build the iOS viewer
 
 ```bash
